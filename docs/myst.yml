@@ -1,0 +1,21 @@
+# See docs at: https://mystmd.org/guide/frontmatter
+version: 1
+project:
+  title: "bifurx: Numerical continuation and bifurcation analysis in JAX"
+  description: "Numerical continuation and bifurcation analysis in JAX (A modern reimagining of AUTO-07P)"
+  authors:
+    - name: "Ryosuke Yoneda"
+      email: "13e.e.c.13@gmail.com"
+  github: "https://github.com/ryosuke-yoneda/bifurx"
+  toc:
+    - file: index.md
+    - title: Theory
+      children:
+        - file: theory/keller_arclength.md
+        - file: theory/bifurcations.md
+    - title: Demos & Tutorials
+      children:
+        - file: ../notebooks/01_pitchfork_bifurcation.ipynb
+        - file: ../notebooks/02_demo_ab_equilibrium.ipynb
+site:
+  template: book-theme
