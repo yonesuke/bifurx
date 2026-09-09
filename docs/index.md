@@ -70,10 +70,12 @@ jax.config.update("jax_enable_x64", True)
 
 from bifurx import BifurcationProblem, continuation, plot_diagram, switch_branch
 
+
 # 1. Define nonlinear equilibrium problem F(u, p) = 0
 def f_pitchfork(u, p):
     x = u[0]
     return jnp.array([p * x - x**3])
+
 
 prob = BifurcationProblem(f_pitchfork, u0=[0.0], p0=-0.5)
 
@@ -91,9 +93,7 @@ bp = res_trivial.get_bifurcations("BP")[0]
 print(f"Detected Branch Point at p = {bp.p:.4f}, u = {bp.u[0]:.4f}")
 
 # 4. Switch onto non-trivial branch u = +sqrt(p)
-u_up, p_up, tau_up = switch_branch(
-    prob, bp.u, bp.p, bp.tangent, ds=0.04, branch_direction=+1.0
-)
+u_up, p_up, tau_up = switch_branch(prob, bp.u, bp.p, bp.tangent, ds=0.04, branch_direction=+1.0)
 res_up = continuation(
     problem=prob,
     u0=u_up,

@@ -29,9 +29,11 @@
 import jax.numpy as jnp
 import bifurx as bx
 
+
 # 1. Define nonlinear problem F(u, p) = 0 (Supercritical pitchfork)
 def pitchfork(u, p):
     return p * u - u**3
+
 
 problem = bx.BifurcationProblem(fn=pitchfork, u0=jnp.array([0.0]), p0=-1.0)
 
