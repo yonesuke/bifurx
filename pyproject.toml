@@ -9,7 +9,7 @@ description = "Numerical continuation and bifurcation analysis in JAX (A modern 
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    { name = "Ryosuke Yoneda", email = "13e.e.c.13@gmail.com" },
+    { name = "Ryosuke Yoneda" },
 ]
 dependencies = [
     "jax",

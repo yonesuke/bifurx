@@ -5,8 +5,8 @@ project:
   description: "Numerical continuation and bifurcation analysis in JAX (A modern reimagining of AUTO-07P)"
   authors:
     - name: "Ryosuke Yoneda"
-      email: "13e.e.c.13@gmail.com"
-  github: "https://github.com/ryosuke-yoneda/bifurx"
+      url: "https://github.com/yonesuke"
+  github: "https://github.com/yonesuke/bifurx"
   toc:
     - file: index.md
     - title: Theory
