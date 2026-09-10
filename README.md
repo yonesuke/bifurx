@@ -49,9 +49,14 @@ for bif in res.bifurcations:
 
 ## Interactive Demo Notebooks
 
-Check out the notebooks directly in [`notebooks/`](notebooks/):
-1. [`notebooks/01_pitchfork_bifurcation.ipynb`](notebooks/01_pitchfork_bifurcation.ipynb) - Pitchfork bifurcation, BP detection, and branch switching
-2. [`notebooks/02_demo_ab_equilibrium.ipynb`](notebooks/02_demo_ab_equilibrium.ipynb) - AUTO-07P benchmark demo `ab` (Exothermic CSTR S-curve & Fold/Hopf detection)
+Check out the interactive notebooks directly in [`notebooks/`](notebooks/):
+1. [`notebooks/01_pitchfork_bifurcation.ipynb`](notebooks/01_pitchfork_bifurcation.ipynb) — Pitchfork bifurcation, BP detection, and branch switching
+2. [`notebooks/02_demo_ab_equilibrium.ipynb`](notebooks/02_demo_ab_equilibrium.ipynb) — AUTO-07P demo `ab` run 1 (Exothermic CSTR S-curve & Fold/Hopf detection)
+3. [`notebooks/03_demo_ab_periodic.ipynb`](notebooks/03_demo_ab_periodic.ipynb) — AUTO-07P demo `ab` run 2 (Periodic orbit continuation via Gauss collocation BVP & homoclinic period blowup)
+4. [`notebooks/04_demo_ab_moore_spence.ipynb`](notebooks/04_demo_ab_moore_spence.ipynb) — AUTO-07P demo `ab` run 3 (2-Parameter Codim-2 Moore-Spence continuation, Cusp point, and BT singularity)
+5. [`notebooks/05_demo_r3b_lyapunov.ipynb`](notebooks/05_demo_r3b_lyapunov.ipynb) — **Circular Restricted Three-Body Problem (CR3BP)**, Lyapunov orbit family, symplectic Floquet multipliers, and **KAM Torus Theory** in astrodynamics (JWST / SOHO)
+6. [`notebooks/06_phase_response_curve.ipynb`](notebooks/06_phase_response_curve.ipynb) — **Modern PRAX**: Infinitesimal Phase Response Curves (iPRC) via superconvergent adjoint BVP, parameter continuation, Type I / II excitability, and Arnold tongues
+7. [`notebooks/07_demo_bratu_bvp.ipynb`](notebooks/07_demo_bratu_bvp.ipynb) — Gelfand-Bratu nonlinear elliptic BVP (Thermal runaway and turning point)
 
 ---
 

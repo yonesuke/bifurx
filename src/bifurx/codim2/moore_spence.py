@@ -182,13 +182,15 @@ def continuation_codim2(
                 n_real = jnp.dot(l_R, vr_v) - 1.0
                 n_imag = jnp.dot(l_R, vi_v)
 
-                return jnp.concatenate([
-                    f_val,
-                    r_real,
-                    r_imag,
-                    jnp.atleast_1d(n_real),
-                    jnp.atleast_1d(n_imag),
-                ])
+                return jnp.concatenate(
+                    [
+                        f_val,
+                        r_real,
+                        r_imag,
+                        jnp.atleast_1d(n_real),
+                        jnp.atleast_1d(n_imag),
+                    ]
+                )
 
             dim_z = 3 * n + 3
             z_cur = np.concatenate([u0_np, [p1_init, p2_init], v_r0, v_i0, [omega0]])

@@ -173,11 +173,13 @@ class CollocationProblem(eqx.Module):
 
     def pack_vars(self, u_mesh: Array, u_gauss: Array, period: float | Array) -> Array:
         """Pack (u_mesh, u_gauss, period) into a single 1D flat vector."""
-        return jnp.concatenate([
-            jnp.asarray(u_mesh, dtype=jnp.float64).ravel(),
-            jnp.asarray(u_gauss, dtype=jnp.float64).ravel(),
-            jnp.atleast_1d(jnp.asarray(period, dtype=jnp.float64)),
-        ])
+        return jnp.concatenate(
+            [
+                jnp.asarray(u_mesh, dtype=jnp.float64).ravel(),
+                jnp.asarray(u_gauss, dtype=jnp.float64).ravel(),
+                jnp.atleast_1d(jnp.asarray(period, dtype=jnp.float64)),
+            ]
+        )
 
     def unpack_vars(self, X: Array) -> tuple[Array, Array, Array]:
         """Unpack 1D flat vector into (u_mesh, u_gauss, period)."""
@@ -202,8 +204,6 @@ class CollocationProblem(eqx.Module):
     ) -> Array:
         """Evaluate collocation BVP residual vector of dimension N*(m+1)*dim + 1."""
         u_mesh, u_gauss, T = self.unpack_vars(X)
-        N = self.num_intervals
-        m = self.num_gauss_points
 
         # Mesh interval lengths h_k = t_{k+1} - t_k
         h = mesh[1:] - mesh[:-1]  # shape (N,)
@@ -214,40 +214,27 @@ class CollocationProblem(eqx.Module):
         if u_ref_gauss is None:
             u_ref_gauss = u_gauss
 
-        colloc_residuals = []
-        continuity_residuals = []
-        phase_integrals = []
-
         p_val = jnp.squeeze(p) if jnp.ndim(p) > 0 else p
-        for k in range(N):
-            hk = h[k]
-            u_k = u_mesh[k]  # (n,)
-            u_g = u_gauss[k]  # (m, n)
-            U_k = jnp.vstack([u_k[None, :], u_g])  # shape (m + 1, n)
 
-            # 1. Collocation at Gauss points
-            for i in range(m):
-                du_dt_i = jnp.dot(self.D[i, :], U_k) / hk
-                f_i = self.fn(u_g[i], p_val, **self.kwargs)
-                r_coll = du_dt_i - T * f_i
-                colloc_residuals.append(r_coll)
+        # U: shape (N, m + 1, dim) containing u_mesh at index 0 and u_gauss at indices 1..m
+        U = jnp.concatenate([u_mesh[:, None, :], u_gauss], axis=1)
 
-            # 2. Continuity with next mesh node
-            u_next = u_mesh[(k + 1) % N]  # Periodic boundary condition: u_N = u_0
-            u_end_approx = jnp.dot(self.C, U_k)
-            r_cont = u_next - u_end_approx
-            continuity_residuals.append(r_cont)
+        # 1. Collocation at Gauss points: du/dt - T * f(u_gauss)
+        # D has shape (m, m + 1); einsum computes (D @ U_k) / hk for each interval k
+        du_dt = jnp.einsum("mj,Njd->Nmd", self.D, U) / h[:, None, None]
+        f_val = jax.vmap(jax.vmap(lambda u: self.fn(u, p_val, **self.kwargs)))(u_gauss)
+        res_coll = (du_dt - T * f_val).ravel()
 
-            # 3. Integral phase condition contribution: int <dot{u}_ref, u> dt
-            # Use reference polynomial derivative at Gauss points
-            U_ref_k = jnp.vstack([u_ref_mesh[k][None, :], u_ref_gauss[k]])
-            for i in range(m):
-                dot_u_ref_i = jnp.dot(self.D[i, :], U_ref_k) / hk
-                phase_integrals.append(hk * self.weights[i] * jnp.dot(dot_u_ref_i, u_g[i]))
+        # 2. Continuity with next mesh node: u_{(k+1)%N} - C @ U_k
+        u_next = jnp.roll(u_mesh, -1, axis=0)
+        u_end_approx = jnp.einsum("j,Njd->Nd", self.C, U)
+        res_cont = (u_next - u_end_approx).ravel()
 
-        res_coll = jnp.concatenate(colloc_residuals)
-        res_cont = jnp.concatenate(continuity_residuals)
-        phase_val = jnp.sum(jnp.array(phase_integrals))
+        # 3. Integral phase condition contribution: sum_k hk sum_i w_i <dot{u}_ref(t_i), u_gauss(t_i)>
+        U_ref = jnp.concatenate([u_ref_mesh[:, None, :], u_ref_gauss], axis=1)
+        dot_u_ref = jnp.einsum("mj,Njd->Nmd", self.D, U_ref) / h[:, None, None]
+        inner_prod = jnp.sum(dot_u_ref * u_gauss, axis=-1)  # shape (N, m)
+        phase_val = jnp.sum(h[:, None] * self.weights[None, :] * inner_prod)
 
         return jnp.concatenate([res_coll, res_cont, jnp.atleast_1d(phase_val)])
 

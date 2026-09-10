@@ -63,7 +63,9 @@ def test_stuart_landau_analytical_iprc():
     z0 = np.asarray(res_prc.Z[0])
     inner_prod = float(np.dot(z0, f0))
     expected_norm = 2.0 * np.pi / sol_orbit.period
-    assert abs(inner_prod - expected_norm) < 1e-5, f"Normalization mismatch: {inner_prod} vs {expected_norm}"
+    assert abs(inner_prod - expected_norm) < 1e-5, (
+        f"Normalization mismatch: {inner_prod} vs {expected_norm}"
+    )
 
 
 def test_van_der_pol_iprc_and_continuation():
@@ -89,7 +91,9 @@ def test_van_der_pol_iprc_and_continuation():
     f0 = np.asarray(f_vdp(jnp.asarray(sol.u_mesh[0]), mu))
     inner_prod = float(np.dot(np.asarray(res_prc.Z[0]), f0))
     expected_norm = 2.0 * np.pi / sol.period
-    assert abs(inner_prod - expected_norm) < 1e-4, f"Normalization error: {inner_prod} vs {expected_norm}"
+    assert abs(inner_prod - expected_norm) < 1e-4, (
+        f"Normalization error: {inner_prod} vs {expected_norm}"
+    )
 
     # Test parameter continuation of iPRC across mu in [0.1, 0.4]
     res_cont = continuation_iprc(

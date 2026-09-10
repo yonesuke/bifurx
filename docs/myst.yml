@@ -13,9 +13,16 @@ project:
       children:
         - file: theory/keller_arclength.md
         - file: theory/bifurcations.md
+        - file: theory/prc_theory.md
+        - file: theory/cr3bp_kam.md
     - title: Demos & Tutorials
       children:
         - file: ../notebooks/01_pitchfork_bifurcation.ipynb
         - file: ../notebooks/02_demo_ab_equilibrium.ipynb
+        - file: ../notebooks/03_demo_ab_periodic.ipynb
+        - file: ../notebooks/04_demo_ab_moore_spence.ipynb
+        - file: ../notebooks/05_demo_r3b_lyapunov.ipynb
+        - file: ../notebooks/06_phase_response_curve.ipynb
+        - file: ../notebooks/07_demo_bratu_bvp.ipynb
 site:
   template: book-theme
