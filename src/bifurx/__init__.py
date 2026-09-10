@@ -15,10 +15,12 @@ from bifurx.bifurcations.test_funcs import (
 from bifurx.bvp.collocation import (
     CollocationProblem,
     PeriodicOrbitResult,
+    PeriodicOrbitResultJax,
     collocation_matrices,
     gauss_legendre_nodes,
     initialize_from_hopf,
     solve_periodic_orbit,
+    solve_periodic_orbit_jax,
 )
 from bifurx.bvp.floquet import (
     compute_floquet_multipliers,
@@ -33,8 +35,10 @@ from bifurx.codim2.moore_spence import (
 from bifurx.continuation.arclength import (
     BifurcationPoint,
     ContinuationResult,
+    ContinuationScanResult,
     compute_initial_tangent,
     continuation,
+    continuation_scan,
 )
 from bifurx.plot.diagram import plot_diagram
 from bifurx.prc.adjoint import (
@@ -52,7 +56,12 @@ from bifurx.solvers.bordered import (
     solve_bordered_direct,
     solve_bordered_system,
 )
-from bifurx.solvers.newton import NewtonResult, bordered_newton_solve
+from bifurx.solvers.newton import (
+    NewtonResult,
+    NewtonResultJax,
+    bordered_newton_solve,
+    bordered_newton_solve_jax,
+)
 
 __version__ = "0.1.0"
 
@@ -63,12 +72,16 @@ __all__ = [
     "Codim2Result",
     "CollocationProblem",
     "ContinuationResult",
+    "ContinuationScanResult",
     "IPRCContinuationResult",
     "IPRCResult",
     "NewtonResult",
+    "NewtonResultJax",
     "PeriodicOrbitResult",
+    "PeriodicOrbitResultJax",
     "bialternate_matrix",
     "bordered_newton_solve",
+    "bordered_newton_solve_jax",
     "collocation_matrices",
     "compute_bifurcation_tangents",
     "compute_floquet_multipliers",
@@ -80,6 +93,7 @@ __all__ = [
     "continuation",
     "continuation_codim2",
     "continuation_iprc",
+    "continuation_scan",
     "equidistribute_mesh",
     "gauss_legendre_nodes",
     "initialize_from_hopf",
@@ -92,6 +106,7 @@ __all__ = [
     "solve_bordered_system",
     "solve_coupled_orbit_prc",
     "solve_periodic_orbit",
+    "solve_periodic_orbit_jax",
     "switch_branch",
     "test_func_branch_point",
     "test_func_fold",

@@ -97,6 +97,24 @@ def eval_lagrange_basis(xi: float | Array, nodes: np.ndarray | Array) -> Array:
     return jnp.array([_basis_j(j) for j in range(n_nodes)])
 
 
+class PeriodicOrbitResultJax(NamedTuple):
+    """Result of pure JAX collocation BVP solve."""
+
+    mesh: Array
+    u_mesh: Array  # shape (N, dim)
+    u_gauss: Array  # shape (N, m, dim)
+    period: Array
+    converged: Array
+    iterations: Array
+    residual_norm: Array
+    problem: CollocationProblem
+
+    @property
+    def T(self) -> Array:
+        """Alias for period."""
+        return self.period
+
+
 class PeriodicOrbitResult(NamedTuple):
     """Result of solving a periodic orbit via collocation BVP."""
 
@@ -381,10 +399,10 @@ def initialize_from_hopf(
     )
 
 
-def solve_periodic_orbit(
+def solve_periodic_orbit_jax(
     problem: CollocationProblem,
     u_mesh_init: Array | np.ndarray,
-    T_init: float,
+    T_init: float | Array,
     p: float | Array,
     mesh: Array | np.ndarray | None = None,
     u_gauss_init: Array | np.ndarray | None = None,
@@ -392,6 +410,163 @@ def solve_periodic_orbit(
     u_ref_gauss: Array | np.ndarray | None = None,
     tol: float = 1e-8,
     max_iters: int = 25,
+) -> PeriodicOrbitResultJax:
+    """Solve for a periodic orbit (u(t), T) using JIT-accelerated Gauss-Legendre collocation.
+
+    Uses `jax.lax.while_loop` over Newton damping steps, with fully vectorized
+    collocation residual and Jacobian evaluations in pure JAX without host synchronization.
+
+    Parameters
+    ----------
+    problem : CollocationProblem
+        Collocation problem definition.
+    u_mesh_init : Array of shape (N, dim)
+        Initial guess for state at mesh nodes.
+    T_init : float | Array
+        Initial guess for orbit period T.
+    p : float | Array
+        Continuation parameter value.
+    mesh : Array of shape (N + 1,) | None, optional
+        Normalized time grid in [0, 1]. Defaults to uniform linspace.
+    u_gauss_init : Array of shape (N, m, dim) | None, optional
+        Initial guess at Gauss collocation nodes. Defaults to vectorized linear interpolation.
+    u_ref_mesh, u_ref_gauss : optional
+        Reference solution for integral phase pinning condition.
+    tol : float, default=1e-8
+        Convergence tolerance for Newton residual norm.
+    max_iters : int, default=25
+        Maximum Newton iterations.
+
+    Returns
+    -------
+    PeriodicOrbitResult
+        Result containing mesh, u_mesh, u_gauss, period, converged, iterations, residual_norm.
+    """
+    N = problem.num_intervals
+
+    if mesh is None:
+        mesh_arr = jnp.linspace(0.0, 1.0, N + 1)
+    else:
+        mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
+
+    u_mesh_arr = jnp.asarray(u_mesh_init, dtype=jnp.float64)
+
+    if u_gauss_init is None:
+        u_k0 = u_mesh_arr
+        u_k1 = jnp.roll(u_mesh_arr, -1, axis=0)
+        rho = problem.rho
+        u_gauss_arr = (1.0 - rho[None, :, None]) * u_k0[:, None, :] + rho[None, :, None] * u_k1[
+            :, None, :
+        ]
+    else:
+        u_gauss_arr = jnp.asarray(u_gauss_init, dtype=jnp.float64)
+
+    u_ref_mesh_arr = (
+        u_mesh_arr if u_ref_mesh is None else jnp.asarray(u_ref_mesh, dtype=jnp.float64)
+    )
+    u_ref_gauss_arr = (
+        u_gauss_arr if u_ref_gauss is None else jnp.asarray(u_ref_gauss, dtype=jnp.float64)
+    )
+
+    p_arr = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
+    T_init_arr = jnp.squeeze(jnp.asarray(T_init, dtype=jnp.float64))
+
+    X_init = problem.pack_vars(u_mesh_arr, u_gauss_arr, T_init_arr)
+
+    r0 = problem.residual(
+        X_init, p_arr, mesh_arr, u_ref_mesh=u_ref_mesh_arr, u_ref_gauss=u_ref_gauss_arr
+    )
+    res_norm_0 = jnp.linalg.norm(r0)
+    conv_0 = res_norm_0 < tol
+
+    init_state = (X_init, jnp.int32(0), conv_0, res_norm_0)
+
+    def cond_fn(state: tuple[Array, Array, Array, Array]) -> Array:
+        _, it, conv, _ = state
+        return (~conv) & (it < max_iters)
+
+    def body_fn(
+        state: tuple[Array, Array, Array, Array],
+    ) -> tuple[Array, Array, Array, Array]:
+        X, it, _, res_norm = state
+        res = problem.residual(
+            X, p_arr, mesh_arr, u_ref_mesh=u_ref_mesh_arr, u_ref_gauss=u_ref_gauss_arr
+        )
+        J = jax.jacobian(
+            lambda x_: problem.residual(
+                x_, p_arr, mesh_arr, u_ref_mesh=u_ref_mesh_arr, u_ref_gauss=u_ref_gauss_arr
+            )
+        )(X)
+
+        s = jnp.linalg.svdvals(J)
+        is_inv = (s[-1] / (s[0] + 1e-30)) > 1e-12
+
+        def _solve() -> Array:
+            return -jnp.linalg.solve(J, res)
+
+        def _lstsq() -> Array:
+            return -jnp.linalg.lstsq(J, res, rcond=1e-12)[0]
+
+        dX = jax.lax.cond(is_inv, _solve, _lstsq)
+
+        X1 = X + dX
+        r1 = jnp.linalg.norm(
+            problem.residual(
+                X1, p_arr, mesh_arr, u_ref_mesh=u_ref_mesh_arr, u_ref_gauss=u_ref_gauss_arr
+            )
+        )
+        X2 = X + 0.5 * dX
+        r2 = jnp.linalg.norm(
+            problem.residual(
+                X2, p_arr, mesh_arr, u_ref_mesh=u_ref_mesh_arr, u_ref_gauss=u_ref_gauss_arr
+            )
+        )
+        X3 = X + 0.25 * dX
+        r3 = jnp.linalg.norm(
+            problem.residual(
+                X3, p_arr, mesh_arr, u_ref_mesh=u_ref_mesh_arr, u_ref_gauss=u_ref_gauss_arr
+            )
+        )
+
+        X_next = jnp.where(
+            r1 < res_norm, X1, jnp.where(r2 < res_norm, X2, jnp.where(r3 < res_norm, X3, X1))
+        )
+        rn_next = jnp.where(
+            r1 < res_norm, r1, jnp.where(r2 < res_norm, r2, jnp.where(r3 < res_norm, r3, r1))
+        )
+
+        is_valid = jnp.isfinite(rn_next) & jnp.all(jnp.isfinite(X_next))
+        conv_next = is_valid & (rn_next < tol)
+        it_next = jnp.where(is_valid, it + 1, jnp.int32(max_iters))
+        return (X_next, it_next, conv_next, rn_next)
+
+    X_fin, it_fin, conv_fin, rn_fin = jax.lax.while_loop(cond_fn, body_fn, init_state)
+    u_mesh_sol, u_gauss_sol, T_sol = problem.unpack_vars(X_fin)
+
+    return PeriodicOrbitResultJax(
+        mesh=mesh_arr,
+        u_mesh=u_mesh_sol,
+        u_gauss=u_gauss_sol,
+        period=T_sol,
+        converged=conv_fin,
+        iterations=it_fin,
+        residual_norm=rn_fin,
+        problem=problem,
+    )
+
+
+def solve_periodic_orbit(
+    problem: CollocationProblem,
+    u_mesh_init: Array | np.ndarray,
+    T_init: float | Array,
+    p: float | Array,
+    mesh: Array | np.ndarray | None = None,
+    u_gauss_init: Array | np.ndarray | None = None,
+    u_ref_mesh: Array | np.ndarray | None = None,
+    u_ref_gauss: Array | np.ndarray | None = None,
+    tol: float = 1e-8,
+    max_iters: int = 25,
+    use_jit: bool = False,
 ) -> PeriodicOrbitResult:
     """Solve for a periodic orbit (u(t), T) using Gauss-Legendre collocation.
 
@@ -401,7 +576,7 @@ def solve_periodic_orbit(
         Collocation problem definition.
     u_mesh_init : Array of shape (N, dim)
         Initial guess for state at mesh nodes.
-    T_init : float
+    T_init : float | Array
         Initial guess for orbit period T.
     p : float | Array
         Continuation parameter value.
@@ -415,11 +590,48 @@ def solve_periodic_orbit(
         Convergence tolerance for Newton residual norm.
     max_iters : int, default=25
         Maximum Newton iterations.
+    use_jit : bool, default=False
+        Whether to use JIT-compiled while_loop solver `solve_periodic_orbit_jax`.
 
     Returns
     -------
     PeriodicOrbitResult
     """
+    if use_jit or isinstance(u_mesh_init, jax.core.Tracer) or isinstance(p, jax.core.Tracer):
+        res = solve_periodic_orbit_jax(
+            problem=problem,
+            u_mesh_init=u_mesh_init,
+            T_init=T_init,
+            p=p,
+            mesh=mesh,
+            u_gauss_init=u_gauss_init,
+            u_ref_mesh=u_ref_mesh,
+            u_ref_gauss=u_ref_gauss,
+            tol=tol,
+            max_iters=max_iters,
+        )
+        if isinstance(u_mesh_init, jax.core.Tracer) or isinstance(p, jax.core.Tracer):
+            return PeriodicOrbitResult(
+                mesh=res.mesh,
+                u_mesh=res.u_mesh,
+                u_gauss=res.u_gauss,
+                period=res.period,  # type: ignore[arg-type]
+                converged=res.converged,  # type: ignore[arg-type]
+                iterations=res.iterations,  # type: ignore[arg-type]
+                residual_norm=res.residual_norm,  # type: ignore[arg-type]
+                problem=problem,
+            )
+        return PeriodicOrbitResult(
+            mesh=res.mesh,
+            u_mesh=res.u_mesh,
+            u_gauss=res.u_gauss,
+            period=float(res.period),
+            converged=bool(res.converged),
+            iterations=int(res.iterations),
+            residual_norm=float(res.residual_norm),
+            problem=problem,
+        )
+
     N = problem.num_intervals
 
     if mesh is None:
