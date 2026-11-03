@@ -51,7 +51,6 @@ from bifurx.continuation.arclength import (
     continuation,
     continuation_scan,
 )
-from bifurx.plot.diagram import plot_diagram
 from bifurx.prc.adjoint import (
     IPRCContinuationResult,
     IPRCResult,
@@ -105,7 +104,6 @@ __all__ = [
     "evaluate_point_diagnostics",
     "gauss_legendre_nodes",
     "initialize_from_hopf",
-    "plot_diagram",
     "redistribute_mesh",
     "refine_bifurcation_point",
     "refine_fold_moore_spence",

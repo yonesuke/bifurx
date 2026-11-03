@@ -140,13 +140,11 @@ source = { editable = "." }
 dependencies = [
     { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "jaxlib", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "jaxlib", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "matplotlib" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "matplotlib" },
     { name = "pre-commit" },
     { name = "pyrefly" },
     { name = "ruff" },
@@ -161,14 +159,11 @@ test = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "jax" },
-    { name = "jaxlib" },
-    { name = "matplotlib" },
-]
+requires-dist = [{ name = "jax" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "matplotlib" },
     { name = "pre-commit" },
     { name = "pyrefly" },
     { name = "ruff" },

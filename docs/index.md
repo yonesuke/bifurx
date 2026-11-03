@@ -33,8 +33,6 @@ For decades, software packages such as **AUTO-07P**, **MATCONT**, and **COCO** h
   - **Hopf Bifurcations (HB)**: Monitored via bialternate matrix products $2 \nabla_u F \odot I$ and imaginary eigenvalue transitions.
 - **Branch Switching via Algebraic Bifurcation Equation (ABE)**:
   - Solves the quadratic ABE using directional second derivatives evaluated via nested `jax.jvp`, switching onto intersecting branches without heuristic perturbation.
-- **Built-in Visualization**:
-  - Integrated publication-quality bifurcation diagrams via `plot_diagram` with automatic stability distinction (solid for stable, dashed for unstable) and annotated bifurcation markers.
 
 ---
 
@@ -68,7 +66,7 @@ import jax.numpy as jnp
 # Enable 64-bit precision for numerical continuation
 jax.config.update("jax_enable_x64", True)
 
-from bifurx import BifurcationProblem, continuation, plot_diagram, switch_branch
+from bifurx import BifurcationProblem, continuation, switch_branch
 
 
 # 1. Define nonlinear equilibrium problem F(u, p) = 0
@@ -104,8 +102,8 @@ res_up = continuation(
     branch_name="Upper Branch",
 )
 
-# 5. Plot bifurcation diagram
-fig, ax = plot_diagram([res_trivial, res_up], title="Pitchfork Bifurcation")
+# 5. Extract trajectory results
+print(f"Upper branch computed {res_up.num_points} points.")
 ```
 
 ---

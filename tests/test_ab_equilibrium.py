@@ -1,7 +1,6 @@
 import jax.numpy as jnp
 
 from bifurx.continuation.arclength import continuation
-from bifurx.plot.diagram import plot_diagram
 from bifurx.problem import BifurcationProblem
 
 P2 = 14.0
@@ -73,8 +72,3 @@ def test_ab_reaction_bifurcations_auto_benchmarks():
         "Branch between LP 1 and HB should be unstable"
     )
     assert bool(jnp.all(st_arr[u2_arr > 4.3])), "Upper branch beyond HB should be stable"
-
-    # Test plotting utility
-    fig, ax = plot_diagram(res, state_index=0, title="Demo AB S-Curve")
-    assert fig is not None
-    assert ax is not None

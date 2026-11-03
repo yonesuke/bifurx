@@ -13,8 +13,6 @@ authors = [
 ]
 dependencies = [
     "jax",
-    "jaxlib",
-    "matplotlib",
 ]
 
 [dependency-groups]
@@ -22,6 +20,7 @@ dev = [
     "ruff",
     "pyrefly",
     "pre-commit",
+    "matplotlib",
 ]
 test = [
     "pytest",
