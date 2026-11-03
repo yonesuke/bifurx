@@ -14,6 +14,8 @@ def equidistribute_mesh(
 ) -> jax.Array:
     """Compute an equidistributed adaptive mesh based on solution gradients (AUTO-07P ADPTDS).
 
+    Vectorized across all intervals and Gauss nodes in pure JAX without host synchronization.
+
     Parameters
     ----------
     sol : PeriodicOrbitResult
@@ -30,69 +32,44 @@ def equidistribute_mesh(
     jax.Array
         New mesh of shape (N + 1,) on [0, 1].
     """
-    mesh = jnp.asarray(sol.mesh)
-    u_mesh = jnp.asarray(sol.u_mesh)
-    u_gauss = jnp.asarray(sol.u_gauss)
-    D = jnp.asarray(sol.problem.D)
-    weights = jnp.asarray(sol.problem.weights)
+    mesh = jnp.asarray(sol.mesh, dtype=jnp.float64)
+    u_mesh = jnp.asarray(sol.u_mesh, dtype=jnp.float64)
+    u_gauss = jnp.asarray(sol.u_gauss, dtype=jnp.float64)
+    D = jnp.asarray(sol.problem.D, dtype=jnp.float64)
+    weights = jnp.asarray(sol.problem.weights, dtype=jnp.float64)
     N = sol.problem.num_intervals
     m = sol.problem.num_gauss_points
 
-    # Compute monitor function on each interval using Gauss points
-    monitor = []
-    for k in range(N):
-        hk = mesh[k + 1] - mesh[k]
-        U_k = jnp.vstack([u_mesh[k][None, :], u_gauss[k]])  # (m + 1, n)
-        # Derivatives at Gauss points
-        du_dt = (D @ U_k) / hk  # shape (m, n)
+    h = mesh[1:] - mesh[:-1]  # (N,)
+    U = jnp.concatenate([u_mesh[:, None, :], u_gauss], axis=1)  # (N, m + 1, n)
+    du_dt = jnp.einsum("mj,Njd->Nmd", D, U) / h[:, None, None]  # (N, m, n)
+    grad_norm2 = jnp.sum(du_dt**2, axis=-1)  # (N, m)
 
-        # Norm of first derivative
-        grad_norm2 = jnp.sum(du_dt**2, axis=1)  # shape (m,)
+    if beta > 0.0:
+        d2u_dt2 = jnp.asarray(jnp.gradient(du_dt, axis=1)) / (h[:, None, None] / m)
+        curv_term = beta * (jnp.sum(d2u_dt2**2, axis=-1) ** (1.0 / 3.0))
+    else:
+        curv_term = 0.0
 
-        # Approximate curvature
-        if beta > 0.0:
-            # Finite differences of gradient within interval
-            d2u_dt2 = jnp.asarray(jnp.gradient(du_dt, axis=0)) / (hk / m)
-            curv_term = beta * (jnp.sum(d2u_dt2**2, axis=1) ** (1.0 / 3.0))
-        else:
-            curv_term = 0.0
+    w_gauss = jnp.sqrt(1.0 + alpha * grad_norm2 + curv_term)  # (N, m)
+    I_k = h * (w_gauss @ weights)  # (N,)
 
-        w_gauss = jnp.sqrt(1.0 + alpha * grad_norm2 + curv_term)
-        monitor.append(hk * jnp.dot(weights, w_gauss))
-    I_k = jnp.stack(monitor)
-
-    # Cumulative monitor function at mesh nodes
-    W = jnp.concatenate([jnp.zeros(1, dtype=I_k.dtype), jnp.cumsum(I_k)])
+    W = jnp.concatenate([jnp.zeros(1, dtype=jnp.float64), jnp.cumsum(I_k)])
     W_total = W[-1]
+    is_valid = (W_total > 0.0) & jnp.isfinite(W_total)
 
-    if float(W_total) <= 0.0 or not bool(jnp.isfinite(W_total)):
-        return mesh
+    W_targets = jnp.linspace(0.0, jnp.where(is_valid, W_total, 1.0), N + 1)
+    t_equi = jnp.interp(W_targets, jnp.where(is_valid, W, mesh), mesh)
+    t_equi = jnp.maximum.accumulate(t_equi.at[0].set(0.0).at[-1].set(1.0))
 
-    # Equidistant monitor targets
-    W_targets = jnp.linspace(0.0, W_total, N + 1)
+    damping_val = jnp.clip(jnp.asarray(damping, dtype=jnp.float64), 0.0, 1.0)
+    t_new = (1.0 - damping_val) * mesh + damping_val * t_equi
 
-    # Invert W(t) by piecewise linear interpolation
-    t_equi = jnp.interp(W_targets, W, mesh)
-    t_equi = t_equi.at[0].set(0.0)
-    t_equi = t_equi.at[-1].set(1.0)
+    min_step = jnp.arange(N + 1, dtype=jnp.float64) * (1e-4 / N)
+    t_new = jnp.maximum.accumulate(t_new - min_step) + min_step
+    t_new = t_new.at[0].set(0.0).at[-1].set(1.0)
 
-    # Ensure strictly increasing
-    t_equi = jnp.maximum.accumulate(t_equi)
-
-    # Damping with current mesh: t_new = (1 - damping) * mesh + damping * t_equi
-    damping = float(jnp.clip(damping, 0.0, 1.0))
-    t_new = (1.0 - damping) * mesh + damping * t_equi
-    t_new = t_new.at[0].set(0.0)
-    t_new = t_new.at[-1].set(1.0)
-
-    # Ensure minimum spacing to avoid degenerate intervals
-    min_h = 1e-4 / N
-    for i in range(1, N + 1):
-        if float(t_new[i]) <= float(t_new[i - 1]) + min_h:
-            t_new = t_new.at[i].set(t_new[i - 1] + min_h)
-    t_new = t_new.at[-1].set(1.0)
-
-    return t_new
+    return jnp.where(is_valid, t_new, mesh)
 
 
 def redistribute_mesh(
@@ -105,7 +82,7 @@ def redistribute_mesh(
     tol: float = 1e-8,
     max_iters: int = 15,
 ) -> PeriodicOrbitResult:
-    """Adaptively redistribute collocation mesh and re-solve orbit on the new mesh.
+    """Adaptively redistribute collocation mesh and re-solve orbit on the new mesh in pure JAX.
 
     Parameters
     ----------
@@ -134,16 +111,13 @@ def redistribute_mesh(
     new_mesh = equidistribute_mesh(sol, alpha=alpha, beta=beta, damping=damping)
     N = sol.problem.num_intervals
     m = sol.problem.num_gauss_points
-    rho = jnp.asarray(sol.problem.rho)
+    n = sol.problem.dim
+    rho = jnp.asarray(sol.problem.rho, dtype=jnp.float64)
 
-    # Interpolate solution onto new mesh nodes and Gauss points
-    u_mesh_new = jnp.stack([sol.evaluate(t) for t in new_mesh[:-1]])
-
-    gauss_rows = []
-    for k in range(N):
-        hk = new_mesh[k + 1] - new_mesh[k]
-        gauss_rows.append(jnp.stack([sol.evaluate(new_mesh[k] + hk * rho[i]) for i in range(m)]))
-    u_gauss_new = jnp.stack(gauss_rows)
+    u_mesh_new = sol.evaluate(new_mesh[:-1])
+    hk = new_mesh[1:] - new_mesh[:-1]
+    t_gauss = (new_mesh[:-1, None] + hk[:, None] * rho[None, :]).ravel()
+    u_gauss_new = sol.evaluate(t_gauss).reshape(N, m, n)
 
     if not re_solve:
         return PeriodicOrbitResult(
@@ -152,12 +126,11 @@ def redistribute_mesh(
             u_gauss=u_gauss_new,
             period=sol.period,
             converged=sol.converged,
-            iterations=0,
+            iterations=jnp.int32(0),
             residual_norm=sol.residual_norm,
             problem=sol.problem,
         )
 
-    # Re-solve orbit on new mesh
     return solve_periodic_orbit(
         problem=sol.problem,
         u_mesh_init=u_mesh_new,

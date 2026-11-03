@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-import numpy as np
 
 from bifurx.bifurcations.switch import switch_branch
 from bifurx.continuation.arclength import continuation
@@ -38,14 +37,14 @@ def test_pitchfork_bifurcation_and_branch_switching():
     assert abs(float(bp0.u[0])) < 1e-2, f"BP state should be close to 0.0, got {bp0.u[0]}"
 
     # Stability of trivial branch: stable for p < 0, unstable for p > 0
-    p_arr = np.asarray(res_trivial.p)
-    st_arr = np.asarray(res_trivial.stability)
+    p_arr = res_trivial.p
+    st_arr = res_trivial.stability
     # Check stable before BP
     stable_before = st_arr[p_arr < -0.05]
-    assert np.all(stable_before), "Trivial branch should be stable for p < 0"
+    assert bool(jnp.all(stable_before)), "Trivial branch should be stable for p < 0"
     # Check unstable after BP
     unstable_after = st_arr[p_arr > 0.05]
-    assert np.all(~unstable_after), "Trivial branch should be unstable for p > 0"
+    assert bool(jnp.all(~unstable_after)), "Trivial branch should be unstable for p > 0"
 
     # 2. Switch to Upper branch (+u)
     u_up, p_up, tau_up = switch_branch(
@@ -62,11 +61,11 @@ def test_pitchfork_bifurcation_and_branch_switching():
     )
     assert res_up.num_points > 5
     # Verify u^2 approx p along upper branch
-    p_up_arr = np.asarray(res_up.p)
-    u_up_arr = np.asarray(res_up.u)[:, 0]
-    assert np.all(u_up_arr > 0), "Upper branch should have positive u"
+    p_up_arr = res_up.p
+    u_up_arr = res_up.u[:, 0]
+    assert bool(jnp.all(u_up_arr > 0)), "Upper branch should have positive u"
     # Check u^2 close to p
-    assert np.allclose(u_up_arr**2, p_up_arr, atol=1e-3)
+    assert jnp.allclose(u_up_arr**2, p_up_arr, atol=1e-3)
 
     # 3. Switch to Lower branch (-u)
     u_dn, p_dn, tau_dn = switch_branch(
@@ -82,10 +81,10 @@ def test_pitchfork_bifurcation_and_branch_switching():
         branch_name="Lower",
     )
     assert res_dn.num_points > 5
-    p_dn_arr = np.asarray(res_dn.p)
-    u_dn_arr = np.asarray(res_dn.u)[:, 0]
-    assert np.all(u_dn_arr < 0), "Lower branch should have negative u"
-    assert np.allclose(u_dn_arr**2, p_dn_arr, atol=1e-3)
+    p_dn_arr = res_dn.p
+    u_dn_arr = res_dn.u[:, 0]
+    assert bool(jnp.all(u_dn_arr < 0)), "Lower branch should have negative u"
+    assert jnp.allclose(u_dn_arr**2, p_dn_arr, atol=1e-3)
 
 
 def test_fold_bifurcation():
@@ -108,18 +107,20 @@ def test_fold_bifurcation():
     assert len(lps) >= 1, "Expected Limit Point (LP) detected"
 
     lp0 = lps[0]
-    assert abs(lp0.p) < 1e-4, f"Fold p should be close to 0.0, got {lp0.p}"
+    assert abs(float(lp0.p)) < 1e-4, f"Fold p should be close to 0.0, got {lp0.p}"
     assert abs(float(lp0.u[0])) < 1e-3, f"Fold u should be close to 0.0, got {lp0.u[0]}"
 
     # Verify that p values turned around (min p is near 0, then increases again)
-    p_arr = np.asarray(res.p)
-    min_p_idx = int(np.argmin(p_arr))
+    p_arr = res.p
+    min_p_idx = int(jnp.argmin(p_arr))
     assert 0 < min_p_idx < len(p_arr) - 1, "Curve should turn around in p"
-    assert p_arr[min_p_idx] < 0.05, f"Sampled p near fold should be small, got {p_arr[min_p_idx]}"
-    assert abs(lp0.p) < 1e-6, f"Refined fold p should be 0.0, got {lp0.p}"
+    assert float(p_arr[min_p_idx]) < 0.05, (
+        f"Sampled p near fold should be small, got {p_arr[min_p_idx]}"
+    )
+    assert abs(float(lp0.p)) < 1e-6, f"Refined fold p should be 0.0, got {lp0.p}"
 
     # Check stability: u > 0 is stable (df/du = -2u < 0), u < 0 is unstable (df/du = -2u > 0)
-    u_arr = np.asarray(res.u)[:, 0]
-    st_arr = np.asarray(res.stability)
-    assert np.all(st_arr[u_arr > 0.1]), "Upper arm (u > 0) should be stable"
-    assert np.all(~st_arr[u_arr < -0.1]), "Lower arm (u < 0) should be unstable"
+    u_arr = res.u[:, 0]
+    st_arr = res.stability
+    assert bool(jnp.all(st_arr[u_arr > 0.1])), "Upper arm (u > 0) should be stable"
+    assert bool(jnp.all(~st_arr[u_arr < -0.1])), "Lower arm (u < 0) should be unstable"

@@ -46,9 +46,7 @@ class BifurcationProblem:
         **kwargs: Any,
     ) -> None:
         object.__setattr__(self, "fn", fn)
-        u_arr = jnp.asarray(u0, dtype=jnp.float64)
-        if u_arr.ndim == 0:
-            u_arr = jnp.atleast_1d(u_arr)
+        u_arr = jnp.atleast_1d(jnp.asarray(u0, dtype=jnp.float64))
         object.__setattr__(self, "u0", u_arr)
         object.__setattr__(self, "p0", float(p0))
         object.__setattr__(self, "param_bounds", param_bounds)
@@ -83,33 +81,20 @@ class BifurcationProblem:
         return int(self.u0.shape[0])
 
     def residual(self, u: jax.Array, p: float | jax.Array) -> jax.Array:
-        """Evaluate nonlinear residual F(u, p)."""
-        u_arr = jnp.asarray(u, dtype=jnp.float64)
-        if u_arr.ndim == 0:
-            u_arr = jnp.atleast_1d(u_arr)
-        p_val = jnp.asarray(p, dtype=jnp.float64)
-        if p_val.ndim == 0:
-            p_val = float(p_val) if not isinstance(p, jax.core.Tracer) else p_val
+        """Evaluate nonlinear residual F(u, p) in pure JAX."""
+        u_arr = jnp.atleast_1d(jnp.asarray(u, dtype=jnp.float64))
+        p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
         res = self.fn(u_arr, p_val, **self.kwargs)
-        res_arr = jnp.asarray(res, dtype=jnp.float64)
-        if res_arr.ndim == 0:
-            res_arr = jnp.atleast_1d(res_arr)
-        return res_arr
+        return jnp.atleast_1d(jnp.asarray(res, dtype=jnp.float64))
 
     def jacobian_u(self, u: jax.Array, p: float | jax.Array) -> jax.Array:
         """Compute Jacobian with respect to state u: $\\nabla_u F(u, p)$."""
-        u_arr = jnp.asarray(u, dtype=jnp.float64)
-        if u_arr.ndim == 0:
-            u_arr = jnp.atleast_1d(u_arr)
+        u_arr = jnp.atleast_1d(jnp.asarray(u, dtype=jnp.float64))
         jac = jax.jacobian(lambda u_: self.residual(u_, p))(u_arr)
-        if jac.ndim == 1:
-            jac = jac.reshape(1, -1)
-        return jac
+        return jac.reshape(self.dim, self.dim)
 
     def jacobian_p(self, u: jax.Array, p: float | jax.Array) -> jax.Array:
         """Compute parameter derivative: $\\nabla_p F(u, p)$."""
-        p_val = jnp.asarray(p, dtype=jnp.float64)
-        if p_val.ndim > 0:
-            p_val = p_val.squeeze()
+        p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
         jac = jax.jacobian(lambda p_: self.residual(u, p_))(p_val)
         return jnp.asarray(jac, dtype=jnp.float64).reshape(self.dim)

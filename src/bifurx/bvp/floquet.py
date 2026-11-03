@@ -28,56 +28,35 @@ def compute_monodromy_condensation(
     jax.Array of shape (dim, dim)
         The monodromy matrix M.
     """
-    mesh = jnp.asarray(sol.mesh)
-    u_gauss = jnp.asarray(sol.u_gauss)
-    T = sol.period
+    mesh = jnp.asarray(sol.mesh, dtype=jnp.float64)
+    u_gauss = jnp.asarray(sol.u_gauss, dtype=jnp.float64)
+    T = jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64))
     N = sol.problem.num_intervals
     m = sol.problem.num_gauss_points
     n = sol.problem.dim
-    D = jnp.asarray(sol.problem.D)
-    C = jnp.asarray(sol.problem.C)
+    D = jnp.asarray(sol.problem.D, dtype=jnp.float64)
+    C = jnp.asarray(sol.problem.C, dtype=jnp.float64)
 
-    # Jacobian of vector field df/du
     jac_fn = jax.jacobian(lambda u_: sol.problem.fn(u_, p, **sol.problem.kwargs))
+    eye_n = jnp.eye(n, dtype=jnp.float64)
+    eye_m = jnp.eye(m, dtype=jnp.float64)
 
     def interval_step(M_total: jax.Array, k: jax.Array) -> tuple[jax.Array, None]:
         """Accumulate the interval transition matrix M_k into the running product."""
         hk = mesh[k + 1] - mesh[k]
+        Ju_k = jax.vmap(jac_fn)(u_gauss[k])  # (m, n, n)
 
-        # Build block matrix A_k of size (m*n, m*n) and RHS B_k of size (m*n, n)
-        A_k = jnp.zeros((m * n, m * n), dtype=jnp.float64)
-        B_k = jnp.zeros((m * n, n), dtype=jnp.float64)
+        A_blocks = (D[:, 1:] / hk)[:, :, None, None] * eye_n[None, None, :, :] - T * eye_m[
+            :, :, None, None
+        ] * Ju_k[:, None, :, :]
+        A_k = jnp.swapaxes(A_blocks, 1, 2).reshape(m * n, m * n)
+        B_k = (-(D[:, 0] / hk)[:, None, None] * eye_n[None, :, :]).reshape(m * n, n)
 
-        for i in range(m):
-            Ju_i = jac_fn(u_gauss[k, i])  # (n, n)
-
-            # Block row i
-            row_start = i * n
-            row_end = (i + 1) * n
-
-            # Contribution of u_{k, 0} (delta u_k) to RHS
-            B_k = B_k.at[row_start:row_end, :].set(-(D[i, 0] / hk) * jnp.eye(n))
-
-            for j in range(m):
-                col_start = j * n
-                col_end = (j + 1) * n
-                # D[i, j+1] / hk * I_n
-                block_ij = (D[i, j + 1] / hk) * jnp.eye(n)
-                if i == j:
-                    block_ij = block_ij - T * Ju_i
-                A_k = A_k.at[row_start:row_end, col_start:col_end].set(block_ij)
-
-        # Solve A_k * K_k = B_k
-        K_k = jnp.linalg.solve(A_k, B_k)  # shape (m*n, n)
-
-        # Transition matrix M_k = C_0 * I_n + sum_{j=1}^m C_j * K_k[j]
-        M_k = C[0] * jnp.eye(n, dtype=jnp.float64)
-        for j in range(m):
-            M_k = M_k + C[j + 1] * K_k[j * n : (j + 1) * n, :]
-
+        K_k = jnp.linalg.solve(A_k, B_k).reshape(m, n, n)
+        M_k = C[0] * eye_n + jnp.einsum("j,jin->in", C[1:], K_k)
         return M_k @ M_total, None
 
-    M_total, _ = jax.lax.scan(interval_step, jnp.eye(n, dtype=jnp.float64), jnp.arange(N))
+    M_total, _ = jax.lax.scan(interval_step, eye_n, jnp.arange(N))
     return M_total
 
 
@@ -88,24 +67,10 @@ def compute_monodromy_variational(
 ) -> jax.Array:
     """Compute the monodromy matrix M by integrating the variational equation:
 
-        dPhi/dt = T * (df/du)(u(t)) * Phi(t),  Phi(0) = I_n.
-
-    Parameters
-    ----------
-    sol : PeriodicOrbitResult
-        Converged periodic orbit result.
-    p : float | jax.Array, default=0.0
-        System parameter value.
-    num_steps : int, default=400
-        Number of RK4 integration steps over [0, 1].
-
-    Returns
-    -------
-    jax.Array of shape (dim, dim)
-        The monodromy matrix M = Phi(1).
+    dPhi/dt = T * (df/du)(u(t)) * Phi(t),  Phi(0) = I_n.
     """
     n = sol.problem.dim
-    T = sol.period
+    T = jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64))
     dt = 1.0 / num_steps
 
     jac_fn = jax.jacobian(lambda u_: sol.problem.fn(u_, p, **sol.problem.kwargs))
@@ -162,6 +127,5 @@ def compute_floquet_multipliers(
         raise ValueError(msg)
 
     multipliers = jnp.linalg.eigvals(M)
-    # Sort by magnitude descending
     idx = jnp.argsort(-jnp.abs(multipliers))
     return multipliers[idx], M

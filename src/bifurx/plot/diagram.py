@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import numpy as np
 
 from bifurx.continuation.arclength import ContinuationResult
 
@@ -72,21 +72,22 @@ def plot_diagram(
     default_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
 
     for b_idx, branch in enumerate(branch_list):
-        p_arr = np.asarray(branch.p)
-        u_arr = np.asarray(branch.u)[:, state_index]
-        st_arr = np.asarray(branch.stability)
+        p_arr = jnp.asarray(branch.p)
+        u_arr = jnp.asarray(branch.u)[:, state_index]
+        st_arr = jnp.asarray(branch.stability)
 
         base_color = default_colors[b_idx % len(default_colors)]
         branch_name = branch.branch_name
 
         # Draw contiguous segments of identical stability
         idx = 0
-        while idx < len(st_arr):
-            is_st = st_arr[idx]
+        n_pts = int(st_arr.shape[0])
+        while idx < n_pts:
+            is_st = bool(st_arr[idx])
             end_idx = idx + 1
-            while end_idx < len(st_arr) and st_arr[end_idx] == is_st:
+            while end_idx < n_pts and bool(st_arr[end_idx]) == is_st:
                 end_idx += 1
-            slice_end = min(end_idx + 1, len(st_arr))
+            slice_end = min(end_idx + 1, n_pts)
 
             label = f"{branch_name} ({'Stable' if is_st else 'Unstable'})" if idx == 0 else ""
 
@@ -103,8 +104,8 @@ def plot_diagram(
         # Mark bifurcation points
         if show_special_points:
             for pt in branch.bifurcation_points:
-                p_val = pt.p
-                u_val = float(np.asarray(pt.u)[state_index])
+                p_val = float(pt.p)
+                u_val = float(jnp.asarray(pt.u)[state_index])
 
                 if pt.bif_type == "LP":
                     ax.scatter(

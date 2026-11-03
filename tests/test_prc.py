@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import jax.numpy as jnp
-import numpy as np
 
 from bifurx.bvp import CollocationProblem, solve_periodic_orbit
 from bifurx.prc import compute_iprc, continuation_iprc, solve_coupled_orbit_prc
@@ -37,32 +36,32 @@ def test_stuart_landau_analytical_iprc():
     m = 4
     prob = CollocationProblem(f_stuart_landau, dim=2, num_intervals=N, num_gauss_points=m)
 
-    t_grid = np.linspace(0, 2 * np.pi, N, endpoint=False)
-    u_init = np.stack([np.cos(t_grid), np.sin(t_grid)], axis=1)
+    t_grid = jnp.linspace(0, 2 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([jnp.cos(t_grid), jnp.sin(t_grid)], axis=1)
 
     sol_orbit, res_prc = solve_coupled_orbit_prc(prob, u_init, T_init=6.28, p=0.0, tol=1e-9)
 
-    assert sol_orbit.converged
-    assert abs(sol_orbit.period - 2.0 * np.pi) < 1e-6
+    assert bool(sol_orbit.converged)
+    assert abs(float(sol_orbit.period) - 2.0 * float(jnp.pi)) < 1e-6
 
     # Verify iPRC against analytical sinusoidal solution: Z_x = -sin(t), Z_y = cos(t)
-    ts = np.asarray(res_prc.ts)
-    zx_exact = -np.sin(ts)
-    zy_exact = np.cos(ts)
+    ts = res_prc.ts
+    zx_exact = -jnp.sin(ts)
+    zy_exact = jnp.cos(ts)
 
-    Z_num = np.asarray(res_prc.Z)
-    err_zx = float(np.max(np.abs(Z_num[:, 0] - zx_exact)))
-    err_zy = float(np.max(np.abs(Z_num[:, 1] - zy_exact)))
+    Z_num = res_prc.Z
+    err_zx = float(jnp.max(jnp.abs(Z_num[:, 0] - zx_exact)))
+    err_zy = float(jnp.max(jnp.abs(Z_num[:, 1] - zy_exact)))
 
     assert err_zx < 1e-4, f"Z_x mismatch with analytical formula: {err_zx}"
     assert err_zy < 1e-4, f"Z_y mismatch with analytical formula: {err_zy}"
 
     # Verify normalization <Z(0), f(u(0))> == 2*pi / T
-    u0 = np.asarray(res_prc.orbit[0])
-    f0 = np.asarray(f_stuart_landau(jnp.asarray(u0)))
-    z0 = np.asarray(res_prc.Z[0])
-    inner_prod = float(np.dot(z0, f0))
-    expected_norm = 2.0 * np.pi / sol_orbit.period
+    u0 = res_prc.orbit[0]
+    f0 = f_stuart_landau(u0)
+    z0 = res_prc.Z[0]
+    inner_prod = float(jnp.dot(z0, f0))
+    expected_norm = 2.0 * float(jnp.pi) / float(sol_orbit.period)
     assert abs(inner_prod - expected_norm) < 1e-5, (
         f"Normalization mismatch: {inner_prod} vs {expected_norm}"
     )
@@ -75,22 +74,22 @@ def test_van_der_pol_iprc_and_continuation():
     m = 4
     prob = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=m)
 
-    t_grid = np.linspace(0, 2 * np.pi, N, endpoint=False)
-    u_init = np.stack([2.0 * np.cos(t_grid), -2.0 * np.sin(t_grid)], axis=1)
+    t_grid = jnp.linspace(0, 2 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
 
-    sol = solve_periodic_orbit(prob, u_init, T_init=2 * np.pi, p=mu, tol=1e-8)
-    assert sol.converged
+    sol = solve_periodic_orbit(prob, u_init, T_init=2 * jnp.pi, p=mu, tol=1e-8)
+    assert bool(sol.converged)
 
     # Test standalone compute_iprc
     res_prc = compute_iprc(sol, p=mu)
-    assert res_prc.period > 6.0
+    assert float(res_prc.period) > 6.0
     assert len(res_prc.Z) == N
 
     # Verify periodicity of iPRC: Z(0) approx Z(T)
     # At mesh nodes, Z[0] and extrapolated Z[end] match
-    f0 = np.asarray(f_vdp(jnp.asarray(sol.u_mesh[0]), mu))
-    inner_prod = float(np.dot(np.asarray(res_prc.Z[0]), f0))
-    expected_norm = 2.0 * np.pi / sol.period
+    f0 = f_vdp(sol.u_mesh[0], mu)
+    inner_prod = float(jnp.dot(res_prc.Z[0], f0))
+    expected_norm = 2.0 * float(jnp.pi) / float(sol.period)
     assert abs(inner_prod - expected_norm) < 1e-4, (
         f"Normalization error: {inner_prod} vs {expected_norm}"
     )
@@ -108,5 +107,5 @@ def test_van_der_pol_iprc_and_continuation():
 
     assert res_cont.num_points == 4
     # Period should increase monotonically with mu for Van der Pol
-    periods = np.asarray(res_cont.periods)
-    assert np.all(np.diff(periods) > 0.0), f"Period should increase with mu: {periods}"
+    periods = res_cont.periods
+    assert bool(jnp.all(jnp.diff(periods) > 0.0)), f"Period should increase with mu: {periods}"

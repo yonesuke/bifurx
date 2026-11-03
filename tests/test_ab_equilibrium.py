@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-import numpy as np
 
 from bifurx.continuation.arclength import continuation
 from bifurx.plot.diagram import plot_diagram
@@ -66,14 +65,14 @@ def test_ab_reaction_bifurcations_auto_benchmarks():
     # 1. Lower branch (before LP 1, u2 < 1.4) is stable
     # 2. Middle & upper pre-Hopf branch (between LP 1 and HB, 1.5 < u2 < 4.1) is unstable
     # 3. Upper branch beyond HB (u2 > 4.3) is stable
-    u2_arr = np.asarray(res.u)[:, 1]
-    st_arr = np.asarray(res.stability)
+    u2_arr = res.u[:, 1]
+    st_arr = res.stability
 
-    assert np.all(st_arr[u2_arr < 1.4]), "Lower branch (before LP 1) should be stable"
-    assert np.all(~st_arr[(u2_arr > 1.5) & (u2_arr < 4.1)]), (
+    assert bool(jnp.all(st_arr[u2_arr < 1.4])), "Lower branch (before LP 1) should be stable"
+    assert bool(jnp.all(~st_arr[(u2_arr > 1.5) & (u2_arr < 4.1)])), (
         "Branch between LP 1 and HB should be unstable"
     )
-    assert np.all(st_arr[u2_arr > 4.3]), "Upper branch beyond HB should be stable"
+    assert bool(jnp.all(st_arr[u2_arr > 4.3])), "Upper branch beyond HB should be stable"
 
     # Test plotting utility
     fig, ax = plot_diagram(res, state_index=0, title="Demo AB S-Curve")

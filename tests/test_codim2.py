@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import jax.numpy as jnp
-import numpy as np
 
 from bifurx.codim2 import continuation_codim2
 
@@ -25,7 +24,7 @@ def test_fold_continuation_codim2_auto_run3_benchmark():
       p1 = 0.1353352, u1 = 0.4996530, u2 = 1.998613
     """
     # LP 1 starting point at p3 = 2.0
-    u_lp1 = np.array([0.3110178, 1.4514162])
+    u_lp1 = jnp.array([0.3110178, 1.4514162])
     p1_lp1 = 0.1057390
     p3_init = 2.0
 
@@ -45,8 +44,8 @@ def test_fold_continuation_codim2_auto_run3_benchmark():
     assert res.bif_type == "LP"
 
     # Locate point on Fold locus closest to p3 = 2.5000
-    p3_arr = np.asarray(res.p2)
-    idx_target = int(np.argmin(np.abs(p3_arr - 2.5000)))
+    p3_arr = res.p2
+    idx_target = int(jnp.argmin(jnp.abs(p3_arr - 2.5000)))
     p1_found = float(res.p1[idx_target])
     p3_found = float(res.p2[idx_target])
     u1_found = float(res.u[idx_target, 0])
@@ -62,7 +61,7 @@ def test_fold_continuation_codim2_auto_run3_benchmark():
 def test_hopf_continuation_codim2():
     """Test 2-parameter Hopf (HB) continuation in (p1, p3) parameter space."""
     # Starting Hopf point at p3 = 2.0
-    u_hb = np.array([0.8950809, 4.1770443])
+    u_hb = jnp.array([0.8950809, 4.1770443])
     p1_hb = 0.1309003
     p3_init = 2.0
 
@@ -82,8 +81,8 @@ def test_hopf_continuation_codim2():
     assert res_hb.bif_type == "HB"
 
     # Verify that p1 remains positive and finite along the Hopf curve
-    p1_arr = np.asarray(res_hb.p1)
-    p3_arr = np.asarray(res_hb.p2)
-    assert np.all(p1_arr > 0.0)
-    assert np.all(np.isfinite(p1_arr))
-    assert np.all(np.isfinite(p3_arr))
+    p1_arr = res_hb.p1
+    p3_arr = res_hb.p2
+    assert bool(jnp.all(p1_arr > 0.0))
+    assert bool(jnp.all(jnp.isfinite(p1_arr)))
+    assert bool(jnp.all(jnp.isfinite(p3_arr)))

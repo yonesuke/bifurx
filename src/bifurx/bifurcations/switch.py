@@ -10,7 +10,7 @@ from bifurx.solvers.newton import bordered_newton_solve
 def compute_singular_direction(
     problem: BifurcationProblem,
     u_star: jax.Array,
-    p_star: float,
+    p_star: float | jax.Array,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Compute the right null vector phi, left null vector psi, and particular vector v0.
 
@@ -20,7 +20,7 @@ def compute_singular_direction(
         Nonlinear system F(u, p) = 0.
     u_star : jax.Array
         State at the branch point.
-    p_star : float
+    p_star : float | jax.Array
         Parameter at the branch point.
 
     Returns
@@ -38,9 +38,7 @@ def compute_singular_direction(
     phi = vh[-1, :]
     psi = u_svd[:, -1]
 
-    # Particular solution v0 for Ju * v0 = -Jp
     v0_raw = jnp.linalg.lstsq(Ju, -Jp)[0].ravel()
-    # Ensure v0 is orthogonal to phi
     v0 = v0_raw - jnp.dot(v0_raw, phi) * phi
 
     return phi, psi, v0
@@ -49,10 +47,10 @@ def compute_singular_direction(
 def compute_bifurcation_tangents(
     problem: BifurcationProblem,
     u_star: jax.Array,
-    p_star: float,
+    p_star: float | jax.Array,
     incoming_tangent: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
-    """Solve the Algebraic Bifurcation Equation (ABE) using second directional derivatives.
+    """Solve the Algebraic Bifurcation Equation (ABE) using second directional derivatives in pure JAX.
 
     At a simple branch point (BP), any tangent vector (dot{u}, dot{p}) satisfies:
         dot{u} = alpha * phi + dot{p} * v0
@@ -69,7 +67,7 @@ def compute_bifurcation_tangents(
         The nonlinear system.
     u_star : jax.Array
         State at the branch point.
-    p_star : float
+    p_star : float | jax.Array
         Parameter at the branch point.
     incoming_tangent : jax.Array
         Tangent of the current incoming branch [tau_u, tau_p].
@@ -80,89 +78,83 @@ def compute_bifurcation_tangents(
         (tau_incoming, tau_secondary) unit tangent vectors for both intersecting branches.
     """
     n = problem.dim
-    phi, psi, v0 = compute_singular_direction(problem, u_star, p_star)
+    u_s = jnp.asarray(u_star, dtype=jnp.float64)
+    p_s = jnp.squeeze(jnp.asarray(p_star, dtype=jnp.float64))
+    phi, psi, v0 = compute_singular_direction(problem, u_s, p_s)
 
-    xi1 = (phi, 0.0)
-    xi2 = (v0, 1.0)
+    zero_p = jnp.array(0.0, dtype=jnp.float64)
+    one_p = jnp.array(1.0, dtype=jnp.float64)
+    xi1 = (phi, zero_p)
+    xi2 = (v0, one_p)
 
-    # Directional second derivative via nested jvp
     def d2F_directional(
-        v_dir: tuple[jax.Array, float], w_dir: tuple[jax.Array, float]
+        v_dir: tuple[jax.Array, jax.Array], w_dir: tuple[jax.Array, jax.Array]
     ) -> jax.Array:
         v_u, v_p = v_dir
         w_u, w_p = w_dir
 
-        def dir1(u_val: jax.Array, p_val: float) -> jax.Array:
+        def dir1(u_val: jax.Array, p_val: jax.Array) -> jax.Array:
             return jax.jvp(problem.residual, (u_val, p_val), (v_u, v_p))[1]
 
-        return jax.jvp(dir1, (u_star, p_star), (w_u, w_p))[1]
+        return jax.jvp(dir1, (u_s, p_s), (w_u, w_p))[1]
 
-    c11 = float(jnp.dot(psi, d2F_directional(xi1, xi1)))
-    c12 = float(jnp.dot(psi, d2F_directional(xi1, xi2)))
-    c22 = float(jnp.dot(psi, d2F_directional(xi2, xi2)))
+    c11 = jnp.dot(psi, d2F_directional(xi1, xi1))
+    c12 = jnp.dot(psi, d2F_directional(xi1, xi2))
+    c22 = jnp.dot(psi, d2F_directional(xi2, xi2))
 
-    # Deconstruct incoming tangent in basis (xi1, xi2)
-    tau_in = jnp.asarray(incoming_tangent)
-    pdot_in = float(tau_in[-1])
+    tau_in = jnp.asarray(incoming_tangent, dtype=jnp.float64)
+    pdot_in = tau_in[-1]
     udot_in = tau_in[:n]
-    alpha_in = float(jnp.dot(phi, udot_in - pdot_in * v0))
+    alpha_in = jnp.dot(phi, udot_in - pdot_in * v0)
 
-    # Solve the quadratic ABE: c11 * alpha^2 + 2 * c12 * alpha * p_dot + c22 * p_dot^2 = 0
-    if abs(c11) > 1e-8:
-        # Divide by p_dot^2 -> c11 * r^2 + 2 * c12 * r + c22 = 0 with r = alpha / p_dot
-        D = max(0.0, c12**2 - c11 * c22)
-        sqrt_D = float(jnp.sqrt(D))
-        r1 = (-c12 + sqrt_D) / c11
-        r2 = (-c12 - sqrt_D) / c11
+    # Case 1: |c11| > 1e-8 -> quadratic roots r = alpha / pdot
+    c11_safe = jnp.where(jnp.abs(c11) > 1e-8, c11, one_p)
+    disc = jnp.maximum(0.0, c12**2 - c11 * c22)
+    sqrt_disc = jnp.sqrt(disc)
+    r1 = (-c12 + sqrt_disc) / c11_safe
+    r2 = (-c12 - sqrt_disc) / c11_safe
 
-        if abs(pdot_in) > 1e-6:
-            r_in = alpha_in / pdot_in
-            r_sec = r2 if abs(r1 - r_in) < abs(r2 - r_in) else r1
-            alpha_sec, pdot_sec = r_sec, 1.0
-        else:
-            # Incoming branch had pdot ~ 0
-            alpha_sec, pdot_sec = r1, 1.0
-    elif abs(c12) > 1e-8:
-        # p_dot * (2 * c12 * alpha + c22 * p_dot) = 0
-        # Root A: p_dot = 0, alpha = 1
-        # Root B: p_dot = 2 * c12, alpha = -c22
-        if abs(pdot_in) < 1e-4:
-            alpha_sec, pdot_sec = -c22, 2.0 * c12
-        else:
-            alpha_sec, pdot_sec = 1.0, 0.0
-    else:
-        # Fallback: singular direction orthogonal to parameter axis
-        alpha_sec, pdot_sec = 1.0, 0.0
+    pdot_safe = jnp.where(jnp.abs(pdot_in) > 1e-6, pdot_in, one_p)
+    r_in = alpha_in / pdot_safe
+    r_sec = jnp.where(jnp.abs(r1 - r_in) < jnp.abs(r2 - r_in), r2, r1)
+    alpha_case1 = jnp.where(jnp.abs(pdot_in) > 1e-6, r_sec, r1)
+    pdot_case1 = one_p
+
+    # Case 2: |c11| <= 1e-8 and |c12| > 1e-8 -> pdot * (2 * c12 * alpha + c22 * pdot) = 0
+    alpha_case2 = jnp.where(jnp.abs(pdot_in) < 1e-4, -c22, one_p)
+    pdot_case2 = jnp.where(jnp.abs(pdot_in) < 1e-4, 2.0 * c12, zero_p)
+
+    # Select active case
+    has_c11 = jnp.abs(c11) > 1e-8
+    has_c12 = jnp.abs(c12) > 1e-8
+    alpha_sec = jnp.where(has_c11, alpha_case1, jnp.where(has_c12, alpha_case2, one_p))
+    pdot_sec = jnp.where(has_c11, pdot_case1, jnp.where(has_c12, pdot_case2, zero_p))
 
     udot_sec = alpha_sec * phi + pdot_sec * v0
     tau_sec_vec = jnp.concatenate([udot_sec, jnp.atleast_1d(pdot_sec)])
-    tau_sec_norm = float(jnp.linalg.norm(tau_sec_vec))
-    if tau_sec_norm > 1e-12:
-        tau_sec_vec = tau_sec_vec / tau_sec_norm
-    else:
-        tau_sec_vec = jnp.concatenate([phi, jnp.zeros(1)])
+    tau_sec_norm = jnp.linalg.norm(tau_sec_vec)
+    phi_fallback = jnp.concatenate([phi, jnp.zeros(1, dtype=jnp.float64)])
+    phi_fallback = phi_fallback / jnp.linalg.norm(phi_fallback)
 
-    # Make secondary tangent linearly independent / orthogonalized to incoming tangent
-    overlap = float(jnp.dot(tau_sec_vec, tau_in))
-    if abs(overlap) > 0.999:
-        # Fallback orthogonal perturbation along singular vector phi
-        tau_sec_vec = jnp.concatenate([phi, jnp.zeros(1)])
-        tau_sec_vec = tau_sec_vec / jnp.linalg.norm(tau_sec_vec)
+    tau_sec_vec = jnp.where(tau_sec_norm > 1e-12, tau_sec_vec / tau_sec_norm, phi_fallback)
 
-    return incoming_tangent, tau_sec_vec
+    overlap = jnp.dot(tau_sec_vec, tau_in)
+    tau_sec_vec = jnp.where(jnp.abs(overlap) > 0.999, phi_fallback, tau_sec_vec)
+
+    return tau_in, tau_sec_vec
 
 
 def switch_branch(
     problem: BifurcationProblem,
     bp_u: jax.Array,
-    bp_p: float,
+    bp_p: float | jax.Array,
     incoming_tangent: jax.Array,
-    ds: float = 0.05,
-    branch_direction: float = 1.0,
+    ds: float | jax.Array = 0.05,
+    branch_direction: float | jax.Array = 1.0,
     tol: float = 1e-8,
     max_iters: int = 15,
-) -> tuple[jax.Array, float, jax.Array]:
-    """Switch to the intersecting branch at a simple branch point (BP).
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Switch to the intersecting branch at a simple branch point (BP) in pure JAX.
 
     Computes the secondary branch tangent via ABE, steps off the branch point by
     `branch_direction * ds * tau_sec`, and corrects the predictor using bordered Newton.
@@ -173,13 +165,13 @@ def switch_branch(
         The nonlinear system F(u, p) = 0.
     bp_u : jax.Array
         State at the detected branch point.
-    bp_p : float
+    bp_p : float | jax.Array
         Parameter at the detected branch point.
     incoming_tangent : jax.Array
         Tangent of the incoming branch.
-    ds : float, default=0.05
+    ds : float | jax.Array, default=0.05
         Initial step size along the new branch.
-    branch_direction : float, default=1.0
+    branch_direction : float | jax.Array, default=1.0
         Direction along the intersecting branch (+1.0 or -1.0).
     tol : float, default=1e-8
         Convergence tolerance for the corrector.
@@ -188,33 +180,34 @@ def switch_branch(
 
     Returns
     -------
-    tuple[jax.Array, float, jax.Array]
+    tuple[jax.Array, jax.Array, jax.Array]
         (u_start, p_start, tau_start) initial point and tangent for continuing the new branch.
     """
     n = problem.dim
-    _, tau_sec = compute_bifurcation_tangents(problem, bp_u, bp_p, incoming_tangent)
+    bp_u_arr = jnp.asarray(bp_u, dtype=jnp.float64)
+    bp_p_arr = jnp.squeeze(jnp.asarray(bp_p, dtype=jnp.float64))
+    ds_arr = jnp.squeeze(jnp.asarray(ds, dtype=jnp.float64))
 
-    # Orient in desired direction
-    tau_target = jnp.sign(branch_direction) * tau_sec
+    _, tau_sec = compute_bifurcation_tangents(problem, bp_u_arr, bp_p_arr, incoming_tangent)
 
-    # Predictor step onto new branch
-    u_pred = bp_u + ds * tau_target[:n]
-    p_pred = bp_p + ds * float(tau_target[-1])
+    dir_sgn = jnp.where(jnp.asarray(branch_direction, dtype=jnp.float64) < 0, -1.0, 1.0)
+    tau_target = dir_sgn * tau_sec
+
+    u_pred = bp_u_arr + ds_arr * tau_target[:n]
+    p_pred = bp_p_arr + ds_arr * tau_target[-1]
 
     res = bordered_newton_solve(
         problem=problem,
         u_init=u_pred,
         p_init=p_pred,
-        u_prev=bp_u,
-        p_prev=bp_p,
+        u_prev=bp_u_arr,
+        p_prev=bp_p_arr,
         tau_prev=tau_target,
-        ds=ds,
+        ds=ds_arr,
         tol=tol,
         max_iters=max_iters,
     )
 
-    if res.converged:
-        return res.u, res.p, tau_target
-
-    # Fallback to predictor if corrector didn't converge within max_iters
-    return u_pred, p_pred, tau_target
+    u_out = jnp.where(res.converged, res.u, u_pred)
+    p_out = jnp.where(res.converged, res.p, p_pred)
+    return u_out, p_out, tau_target
