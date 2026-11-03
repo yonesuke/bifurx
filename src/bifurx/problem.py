@@ -26,6 +26,12 @@ class BifurcationProblem:
         Can be overridden by passing `param_bounds` directly to `continuation()` or `continuation_scan()`.
     param_index : int | None, optional
         Optional index if parameter p is an element of a parameter vector.
+    jac_u : Callable[..., jax.Array] | None, optional
+        Optional custom function computing $\nabla_u F(u, p, **kwargs)$ returning an $(n, n)$ array.
+        Defaults to autodiff via `jax.jacobian`.
+    jac_p : Callable[..., jax.Array] | None, optional
+        Optional custom function computing $\nabla_p F(u, p, **kwargs)$ returning an $(n,)$ array.
+        Defaults to autodiff via `jax.jacobian`.
     **kwargs : Any
         Additional keyword arguments passed to `fn`.
     """
@@ -35,6 +41,8 @@ class BifurcationProblem:
     p0: float
     param_bounds: tuple[float, float] | None = None
     param_index: int | None = None
+    jac_u: Callable[..., jax.Array] | None = None
+    jac_p: Callable[..., jax.Array] | None = None
     kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __init__(
@@ -44,6 +52,8 @@ class BifurcationProblem:
         p0: float | int,
         param_bounds: tuple[float, float] | None = None,
         param_index: int | None = None,
+        jac_u: Callable[..., jax.Array] | None = None,
+        jac_p: Callable[..., jax.Array] | None = None,
         **kwargs: Any,
     ) -> None:
         object.__setattr__(self, "fn", fn)
@@ -52,12 +62,14 @@ class BifurcationProblem:
         object.__setattr__(self, "p0", float(p0))
         object.__setattr__(self, "param_bounds", param_bounds)
         object.__setattr__(self, "param_index", param_index)
+        object.__setattr__(self, "jac_u", jac_u)
+        object.__setattr__(self, "jac_p", jac_p)
         object.__setattr__(self, "kwargs", kwargs)
 
     def tree_flatten(self) -> tuple[tuple[jax.Array, float], tuple[Any, ...]]:
         """Flatten into JAX pytree leaves ``(u0, p0)`` and static auxiliary data."""
         children = (self.u0, self.p0)
-        aux = (self.fn, self.param_bounds, self.param_index, self.kwargs)
+        aux = (self.fn, self.param_bounds, self.param_index, self.jac_u, self.jac_p, self.kwargs)
         return children, aux
 
     @classmethod
@@ -65,7 +77,7 @@ class BifurcationProblem:
         cls, aux: tuple[Any, ...], children: tuple[jax.Array, float]
     ) -> BifurcationProblem:
         """Rebuild a problem from JAX pytree leaves without re-running ``__init__``."""
-        fn, param_bounds, param_index, kwargs = aux
+        fn, param_bounds, param_index, jac_u, jac_p, kwargs = aux
         u0, p0 = children
         obj = object.__new__(cls)
         object.__setattr__(obj, "fn", fn)
@@ -73,6 +85,8 @@ class BifurcationProblem:
         object.__setattr__(obj, "p0", p0)
         object.__setattr__(obj, "param_bounds", param_bounds)
         object.__setattr__(obj, "param_index", param_index)
+        object.__setattr__(obj, "jac_u", jac_u)
+        object.__setattr__(obj, "jac_p", jac_p)
         object.__setattr__(obj, "kwargs", kwargs)
         return obj
 
@@ -91,11 +105,19 @@ class BifurcationProblem:
     def jacobian_u(self, u: jax.Array, p: float | jax.Array) -> jax.Array:
         """Compute Jacobian with respect to state u: $\\nabla_u F(u, p)$."""
         u_arr = jnp.atleast_1d(jnp.asarray(u, dtype=jnp.float64))
-        jac = jax.jacobian(lambda u_: self.residual(u_, p))(u_arr)
+        p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
+        if self.jac_u is not None:
+            res = self.jac_u(u_arr, p_val, **self.kwargs)
+            return jnp.asarray(res, dtype=jnp.float64).reshape(self.dim, self.dim)
+        jac = jax.jacobian(lambda u_: self.residual(u_, p_val))(u_arr)
         return jac.reshape(self.dim, self.dim)
 
     def jacobian_p(self, u: jax.Array, p: float | jax.Array) -> jax.Array:
         """Compute parameter derivative: $\\nabla_p F(u, p)$."""
+        u_arr = jnp.atleast_1d(jnp.asarray(u, dtype=jnp.float64))
         p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
-        jac = jax.jacobian(lambda p_: self.residual(u, p_))(p_val)
+        if self.jac_p is not None:
+            res = self.jac_p(u_arr, p_val, **self.kwargs)
+            return jnp.asarray(res, dtype=jnp.float64).reshape(self.dim)
+        jac = jax.jacobian(lambda p_: self.residual(u_arr, p_))(p_val)
         return jnp.asarray(jac, dtype=jnp.float64).reshape(self.dim)

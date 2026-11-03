@@ -162,3 +162,35 @@ def test_continuation_stop_reason():
     assert res_fail.stop_reason == "corrector_failed"
 
 
+def test_user_supplied_jacobians():
+    """Test custom jac_u and jac_p support in BifurcationProblem."""
+    def fn(u, p):
+        return jnp.array([u[0] ** 2 - p])
+
+    def custom_jac_u(u, p):
+        return jnp.array([[2.0 * u[0]]])
+
+    def custom_jac_p(u, p):
+        return jnp.array([-1.0])
+
+    prob = BifurcationProblem(
+        fn=fn,
+        u0=[1.0],
+        p0=1.0,
+        jac_u=custom_jac_u,
+        jac_p=custom_jac_p,
+    )
+
+    # Test direct jacobian evaluation
+    ju = prob.jacobian_u(jnp.array([3.0]), 1.0)
+    jp = prob.jacobian_p(jnp.array([3.0]), 1.0)
+    assert jnp.allclose(ju, jnp.array([[6.0]]))
+    assert jnp.allclose(jp, jnp.array([-1.0]))
+
+    # Test continuation
+    res = continuation(prob, ds=0.1, max_steps=15)
+    assert res.num_points > 5
+    assert jnp.allclose(res.u[:, 0] ** 2, res.p, atol=1e-3)
+
+
+
