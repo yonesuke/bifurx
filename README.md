@@ -70,6 +70,9 @@ cd bifurx
 # Install dependencies and sync environment with uv
 uv sync --group dev --group test --group docs
 
+# Note: if installing in editable mode into a directory with a leading underscore (e.g. `_bifurx_src`),
+# pass the explicit relative path: `uv pip install -e ./_bifurx_src`
+
 # Run test suite
 uv run pytest
 
