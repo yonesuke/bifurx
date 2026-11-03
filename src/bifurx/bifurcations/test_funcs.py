@@ -109,14 +109,16 @@ def _bisect_root(
 
     def cond(state: tuple[jax.Array, jax.Array, jax.Array]) -> jax.Array:
         lo_s, hi_s, i_s = state
-        return ((hi_s - lo_s) > tol) & (i_s < max_iters)
+        return ((hi_s - lo_s) > tol) & (i_s < max_iters) & jnp.isfinite(lo_s) & jnp.isfinite(hi_s)
 
     def body(
         state: tuple[jax.Array, jax.Array, jax.Array],
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
         lo_s, hi_s, i_s = state
         mid = 0.5 * (lo_s + hi_s)
-        go_left = (f(lo_s) * f(mid)) <= 0.0
+        f_mid = f(mid)
+        f_lo = f(lo_s)
+        go_left = jnp.isfinite(f_mid) & jnp.isfinite(f_lo) & ((f_lo * f_mid) <= 0.0)
         new_lo = jnp.where(go_left, lo_s, mid)
         new_hi = jnp.where(go_left, mid, hi_s)
         return new_lo, new_hi, i_s + 1
@@ -219,10 +221,19 @@ def refine_bifurcation_point(
 
     has_bracket = jnp.isfinite(fa) & jnp.isfinite(fb) & ((fa * fb) <= 0.0)
     alpha_bisect = _bisect_root(test_val_at, alpha_lo, alpha_hi, tol=tol)
-    alpha_opt = jnp.where(has_bracket, alpha_bisect, jnp.array(0.5, dtype=jnp.float64))
+    alpha_opt = jnp.where(
+        has_bracket & jnp.isfinite(alpha_bisect),
+        alpha_bisect,
+        jnp.array(0.5, dtype=jnp.float64),
+    )
+
+    u_mid = 0.5 * (u_a_j + u_b_j)
+    p_mid = 0.5 * (p_a_j + p_b_j)
 
     u_opt = (1.0 - alpha_opt) * u_a_j + alpha_opt * u_b_j
     p_opt = (1.0 - alpha_opt) * p_a_j + alpha_opt * p_b_j
+    u_opt = jnp.where(jnp.all(jnp.isfinite(u_opt)), u_opt, u_mid)
+    p_opt = jnp.where(jnp.isfinite(p_opt), p_opt, p_mid)
 
     tau_opt = (1.0 - alpha_opt) * tau_a_j + alpha_opt * tau_b_j
     tau_norm = jnp.linalg.norm(tau_opt)
@@ -247,6 +258,12 @@ def refine_bifurcation_point(
         u_fold, p_fold = refine_fold_moore_spence(problem, u_b_j, p_b_j, tol=tol)
         ms_res_norm = jnp.linalg.norm(problem.residual(u_fold, p_fold))
         ms_ok = jnp.all(jnp.isfinite(u_fold)) & jnp.isfinite(p_fold) & (ms_res_norm < 1e-6)
-        return jnp.where(ms_ok, u_fold, u_pol), jnp.where(ms_ok, p_fold, p_pol)
+        u_res = jnp.where(ms_ok, u_fold, u_pol)
+        p_res = jnp.where(ms_ok, p_fold, p_pol)
+    else:
+        u_res = u_pol
+        p_res = p_pol
 
-    return u_pol, p_pol
+    u_final = jnp.where(jnp.all(jnp.isfinite(u_res)), u_res, u_mid)
+    p_final = jnp.where(jnp.isfinite(p_res), p_res, p_mid)
+    return u_final, p_final

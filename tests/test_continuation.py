@@ -197,3 +197,37 @@ def test_user_supplied_jacobians():
     res = continuation(prob, ds=0.1, max_steps=15)
     assert res.num_points > 5
     assert jnp.allclose(res.u[:, 0] ** 2, res.p, atol=1e-3)
+
+
+def test_refinement_nan_validation():
+    """Test that bifurcation refinement never returns or stores NaN coordinates (#3)."""
+    from bifurx.bifurcations.test_funcs import refine_bifurcation_point
+
+    def f_singular(u, p):
+        # Function that becomes NaN/singular near certain values
+        return jnp.array([jnp.where(u[0] > 0.5, jnp.nan, u[0] ** 2 - p)])
+
+    prob = BifurcationProblem(fn=f_singular, u0=[0.0], p0=0.0)
+
+    u_a = jnp.array([0.0])
+    p_a = jnp.array(0.0)
+    tau_a = jnp.array([1.0, 0.0])
+    u_b = jnp.array([1.0])  # will produce NaN in f_singular
+    p_b = jnp.array(1.0)
+    tau_b = jnp.array([0.0, 1.0])
+
+    u_ref, p_ref = refine_bifurcation_point(prob, u_a, p_a, tau_a, u_b, p_b, tau_b, bif_type="LP")
+    assert bool(jnp.all(jnp.isfinite(u_ref))), f"u_ref should be finite, got {u_ref}"
+    assert bool(jnp.isfinite(p_ref)), f"p_ref should be finite, got {p_ref}"
+
+    # Also verify that continuation never stores NaN coordinates in bifurcation_points
+    def f_fold(u, p):
+        return jnp.array([p - u[0] ** 2])
+
+    prob_fold = BifurcationProblem(fn=f_fold, u0=[1.0], p0=1.0)
+    res = continuation(prob_fold, ds=0.05, max_steps=40, direction=-1.0)
+    for bp in res.bifurcation_points:
+        assert not jnp.isnan(bp.p), f"Found NaN parameter in bifurcation point: {bp}"
+        assert bool(jnp.all(jnp.isfinite(bp.u))), (
+            f"Found non-finite state in bifurcation point: {bp}"
+        )

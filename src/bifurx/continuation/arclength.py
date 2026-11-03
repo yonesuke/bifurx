@@ -393,14 +393,29 @@ def continuation(
                     tau_full[s_idx],
                     bif_type,
                 )
+                p_val = float(p_ref)
+                u_finite = bool(jnp.all(jnp.isfinite(u_ref)))
+                p_finite = bool(jnp.isfinite(p_ref))
+
+                if not (u_finite and p_finite):
+                    if verbose:
+                        print(
+                            f"  >>> [{label}] at step {s_idx}: dropped non-finite bifurcation point"
+                        )
+                    continue
+
+                res_norm = float(jnp.linalg.norm(problem.residual(u_ref, p_ref)))
                 details: dict[str, Any] = {"step": s_idx}
+                if res_norm > 1e-3:
+                    details["refinement_failed"] = True
+                    details["residual_norm"] = res_norm
                 if bif_type == "BP":
                     details["Ju"] = problem.jacobian_u(u_full[s_idx], p_full[s_idx])
                 bif_points.append(
                     BifurcationPoint(
                         bif_type=bif_type,
                         u=u_ref,
-                        p=float(p_ref),
+                        p=p_val,
                         step=s_idx,
                         tangent=tau_full[s_idx],
                         details=details,
