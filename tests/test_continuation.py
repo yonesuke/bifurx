@@ -231,3 +231,30 @@ def test_refinement_nan_validation():
         assert bool(jnp.all(jnp.isfinite(bp.u))), (
             f"Found non-finite state in bifurcation point: {bp}"
         )
+
+
+def test_lp_refinement_bracket_selection():
+    """Test that LP refinement selects the fold closest to the bracket (#12)."""
+    from bifurx.bifurcations.test_funcs import refine_bifurcation_point
+
+    # F(u, p) = (u - 2)^2 - p  -> Fold at u = 2, p = 0
+    # Secondary branch/fold could attract Newton if seeded from u_b
+    def f_two_folds(u, p):
+        # Has two folds: one at u=2.0 (p=0.0) and one at u=-2.0 (p=0.0)
+        return jnp.array([(u[0] ** 2 - 4.0) ** 2 - p])
+
+    prob = BifurcationProblem(fn=f_two_folds, u0=[2.1], p0=0.1)
+
+    # Bracket around u = 2 fold:
+    # u_a is at 1.9, p_a = (1.9^2 - 4)^2 = 0.1521
+    # Suppose u_b was stepped past the turn towards 2.1, p_b = 0.1681
+    u_a = jnp.array([1.9])
+    p_a = jnp.array(0.1521)
+    tau_a = jnp.array([0.9, -0.1])
+    u_b = jnp.array([2.1])
+    p_b = jnp.array(0.1681)
+    tau_b = jnp.array([0.9, 0.1])
+
+    u_ref, p_ref = refine_bifurcation_point(prob, u_a, p_a, tau_a, u_b, p_b, tau_b, bif_type="LP")
+    assert jnp.allclose(u_ref, jnp.array([2.0]), atol=1e-3)
+    assert jnp.allclose(p_ref, 0.0, atol=1e-3)

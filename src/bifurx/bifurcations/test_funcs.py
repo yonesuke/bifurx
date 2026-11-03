@@ -255,11 +255,51 @@ def refine_bifurcation_point(
     p_pol = jnp.where(pol_ok, res_pol.p, p_opt)
 
     if bif_type == "LP":
-        u_fold, p_fold = refine_fold_moore_spence(problem, u_b_j, p_b_j, tol=tol)
-        ms_res_norm = jnp.linalg.norm(problem.residual(u_fold, p_fold))
-        ms_ok = jnp.all(jnp.isfinite(u_fold)) & jnp.isfinite(p_fold) & (ms_res_norm < 1e-6)
-        u_res = jnp.where(ms_ok, u_fold, u_pol)
-        p_res = jnp.where(ms_ok, p_fold, p_pol)
+        # Seed Moore-Spence from both endpoints (pre-turn u_a, post-turn u_b) and the polished point u_pol (#12)
+        u_fa, p_fa = refine_fold_moore_spence(problem, u_a_j, p_a_j, tol=tol)
+        u_fb, p_fb = refine_fold_moore_spence(problem, u_b_j, p_b_j, tol=tol)
+        u_fp, p_fp = refine_fold_moore_spence(problem, u_pol, p_pol, tol=tol)
+
+        ok_a = (
+            jnp.all(jnp.isfinite(u_fa))
+            & jnp.isfinite(p_fa)
+            & (jnp.linalg.norm(problem.residual(u_fa, p_fa)) < 1e-6)
+        )
+        ok_b = (
+            jnp.all(jnp.isfinite(u_fb))
+            & jnp.isfinite(p_fb)
+            & (jnp.linalg.norm(problem.residual(u_fb, p_fb)) < 1e-6)
+        )
+        ok_p = (
+            jnp.all(jnp.isfinite(u_fp))
+            & jnp.isfinite(p_fp)
+            & (jnp.linalg.norm(problem.residual(u_fp, p_fp)) < 1e-6)
+        )
+
+        p_lo = jnp.minimum(p_a_j, p_b_j)
+        p_hi = jnp.maximum(p_a_j, p_b_j)
+        p_span = jnp.maximum(p_hi - p_lo, 1e-6)
+        u_span = jnp.maximum(jnp.linalg.norm(u_b_j - u_a_j), 1e-6)
+
+        def _candidate_score(u_c: jax.Array, p_c: jax.Array, ok_c: jax.Array) -> jax.Array:
+            p_excess = jnp.maximum(0.0, jnp.maximum(p_lo - p_c, p_c - p_hi))
+            p_pen = (p_excess / p_span) ** 2
+            dist = jnp.sum(((u_c - u_mid) / u_span) ** 2) + ((p_c - p_mid) / p_span) ** 2
+            return jnp.where(ok_c, dist + 100.0 * p_pen, 1e20)
+
+        score_a = _candidate_score(u_fa, p_fa, ok_a)
+        score_b = _candidate_score(u_fb, p_fb, ok_b)
+        score_p = _candidate_score(u_fp, p_fp, ok_p)
+
+        use_a = (score_a <= score_b) & (score_a <= score_p) & (score_a < 1e10)
+        use_b = (~use_a) & (score_b <= score_p) & (score_b < 1e10)
+        use_p = (~use_a) & (~use_b) & (score_p < 1e10)
+
+        u_ms = jnp.where(use_a, u_fa, jnp.where(use_b, u_fb, jnp.where(use_p, u_fp, u_pol)))
+        p_ms = jnp.where(use_a, p_fa, jnp.where(use_b, p_fb, jnp.where(use_p, p_fp, p_pol)))
+
+        u_res = u_ms
+        p_res = p_ms
     else:
         u_res = u_pol
         p_res = p_pol
