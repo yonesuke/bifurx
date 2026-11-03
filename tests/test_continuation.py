@@ -124,3 +124,20 @@ def test_fold_bifurcation():
     st_arr = res.stability
     assert bool(jnp.all(st_arr[u_arr > 0.1])), "Upper arm (u > 0) should be stable"
     assert bool(jnp.all(~st_arr[u_arr < -0.1])), "Lower arm (u < 0) should be unstable"
+
+
+def test_param_bounds_precedence():
+    """Test precedence of param_bounds argument over problem.param_bounds."""
+    fn = lambda u, p: jnp.array([u[0] ** 2 - p])
+    # problem default bounds: (0.0, 5.0)
+    prob = BifurcationProblem(fn=fn, u0=[1.0], p0=1.0, param_bounds=(0.0, 5.0))
+
+    # continuation with default bounds reaches past 4.0
+    res_default = continuation(prob, ds=0.1, max_steps=50)
+    assert float(jnp.max(res_default.p)) > 4.0
+
+    # continuation with override bounds terminates around 2.0
+    res_override = continuation(prob, ds=0.1, param_bounds=(0.5, 2.0), max_steps=50)
+    assert float(jnp.max(res_override.p)) < 3.0
+    assert len(res_override.p) < len(res_default.p)
+

@@ -99,6 +99,21 @@ def compute_initial_tangent(
     return jnp.where(norm_val > 1e-12, tau / norm_val, tau)
 
 
+def _resolve_param_bounds(
+    problem: BifurcationProblem,
+    param_bounds: tuple[float, float] | jax.Array | None,
+) -> tuple[jax.Array, jax.Array]:
+    """Resolve (p_min, p_max) bounds with explicit override taking precedence over problem default."""
+    bounds = param_bounds if param_bounds is not None else problem.param_bounds
+    if bounds is not None:
+        p_min = jnp.asarray(bounds[0], dtype=jnp.float64)
+        p_max = jnp.asarray(bounds[1], dtype=jnp.float64)
+    else:
+        p_min = jnp.array(-jnp.inf, dtype=jnp.float64)
+        p_max = jnp.array(jnp.inf, dtype=jnp.float64)
+    return p_min, p_max
+
+
 def continuation_scan(
     problem: BifurcationProblem,
     u0: ArrayLike | list[float] | Any | None = None,
@@ -153,6 +168,7 @@ def continuation_scan(
         Maximum Newton iterations per step.
     param_bounds : tuple[float, float] | jax.Array | None, optional
         Bounds (p_min, p_max) to terminate active continuation.
+        Overrides `problem.param_bounds` if provided.
     adaptive_step : bool, default=False
         Whether to adjust step size dynamically.
     solver_method : str, default="auto"
@@ -175,15 +191,7 @@ def continuation_scan(
     else:
         tau_cur = compute_initial_tangent(problem, u_cur, p_cur, direction=direction)
 
-    if param_bounds is not None:
-        p_min = jnp.asarray(param_bounds[0], dtype=jnp.float64)
-        p_max = jnp.asarray(param_bounds[1], dtype=jnp.float64)
-    elif problem.param_bounds is not None:
-        p_min = jnp.asarray(problem.param_bounds[0], dtype=jnp.float64)
-        p_max = jnp.asarray(problem.param_bounds[1], dtype=jnp.float64)
-    else:
-        p_min = jnp.array(-jnp.inf, dtype=jnp.float64)
-        p_max = jnp.array(jnp.inf, dtype=jnp.float64)
+    p_min, p_max = _resolve_param_bounds(problem, param_bounds)
 
     init_carry = (u_cur, p_cur, tau_cur, ds_cur, jnp.bool_(True))
 
@@ -309,7 +317,6 @@ def continuation(
     """
     u_cur = problem.u0 if u0 is None else jnp.asarray(u0, dtype=jnp.float64)
     p_cur = jnp.squeeze(jnp.asarray(problem.p0 if p0 is None else p0, dtype=jnp.float64))
-    bounds = param_bounds if param_bounds is not None else problem.param_bounds
 
     if verbose:
         print(f"[{branch_name}] Start: p={float(p_cur):.4f}, u={u_cur}")
@@ -334,7 +341,7 @@ def continuation(
         n_steps=max_steps,
         newton_tol=newton_tol,
         newton_max_iters=newton_max_iters,
-        param_bounds=bounds,
+        param_bounds=param_bounds,
         adaptive_step=adaptive_step,
     )
 

@@ -22,7 +22,8 @@ class BifurcationProblem:
     p0 : float
         Initial continuation parameter value p.
     param_bounds : tuple[float, float] | None, optional
-        Optional (p_min, p_max) bounds to terminate continuation.
+        Optional (p_min, p_max) default bounds to terminate continuation.
+        Can be overridden by passing `param_bounds` directly to `continuation()` or `continuation_scan()`.
     param_index : int | None, optional
         Optional index if parameter p is an element of a parameter vector.
     **kwargs : Any
