@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import warnings
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
@@ -102,6 +103,12 @@ class PeriodicOrbitResult(NamedTuple):
     def T(self) -> jax.Array:
         """Alias for period."""
         return self.period
+
+    @property
+    def amplitude(self) -> jax.Array:
+        """Root-mean-square amplitude of orbit around its mean state (#14)."""
+        u_mean = jnp.mean(self.u_mesh, axis=0, keepdims=True)
+        return jnp.sqrt(jnp.mean(jnp.sum((self.u_mesh - u_mean) ** 2, axis=-1)))
 
     def evaluate(self, t: float | jax.Array) -> jax.Array:
         """Evaluate continuous periodic orbit state u(t) at any normalized phase t in [0, 1]."""
@@ -318,6 +325,20 @@ def initialize_from_hopf(
     T0 = 2.0 * jnp.pi / omega
     vec = vecs[:, chosen_idx]
 
+    # Check for degenerate Hopf bifurcation (repeated critical imaginary eigenvalues) (#14)
+    crit_mask = complex_mask & (jnp.abs(jnp.real(eigs)) < 1e-2)
+    crit_freqs = jnp.where(crit_mask, jnp.abs(jnp.imag(eigs)), -1.0)
+    freq_diffs = jnp.abs(crit_freqs - omega)
+    matches = (freq_diffs < 1e-3) & (crit_freqs > 0)
+    if bool(jnp.sum(matches) > 2):
+        warnings.warn(
+            "Degenerate Hopf point detected: critical imaginary eigenvalue has algebraic "
+            "multiplicity >= 2. A single eigenvector seed may collapse onto the trivial "
+            "equilibrium. Consider increasing eps, setting non_trivial=True, or providing a custom initial guess.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     v_r = jnp.real(vec)
     v_i = jnp.imag(vec)
     norm_v = jnp.sqrt(jnp.dot(v_r, v_r) + jnp.dot(v_i, v_i))
@@ -360,6 +381,8 @@ def solve_periodic_orbit(
     u_ref_gauss: ArrayLike | None = None,
     tol: float = 1e-8,
     max_iters: int = 25,
+    non_trivial: bool = False,
+    min_amplitude: float = 1e-4,
 ) -> PeriodicOrbitResult:
     """Solve for a periodic orbit (u(t), T) using pure-JAX Gauss-Legendre collocation.
 
@@ -386,6 +409,11 @@ def solve_periodic_orbit(
         Convergence tolerance for Newton residual norm.
     max_iters : int, default=25
         Maximum Newton iterations.
+    non_trivial : bool, default=False
+        If True, forbids collapsing onto the trivial constant equilibrium by penalizing
+        zero amplitude during Newton iterations and requiring amplitude >= min_amplitude (#14).
+    min_amplitude : float, default=1e-4
+        Minimum RMS amplitude required for non_trivial=True.
 
     Returns
     -------
@@ -393,6 +421,7 @@ def solve_periodic_orbit(
         Result containing mesh, u_mesh, u_gauss, period, converged, iterations, residual_norm.
     """
     N = problem.num_intervals
+    n_mesh = N * problem.dim
 
     if mesh is None:
         mesh_arr = jnp.linspace(0.0, 1.0, N + 1, dtype=jnp.float64)
@@ -400,6 +429,8 @@ def solve_periodic_orbit(
         mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
 
     u_mesh_arr = jnp.asarray(u_mesh_init, dtype=jnp.float64)
+    u_mean_0 = jnp.mean(u_mesh_arr, axis=0, keepdims=True)
+    amp_init = jnp.sqrt(jnp.mean(jnp.sum((u_mesh_arr - u_mean_0) ** 2, axis=-1)))
 
     if u_gauss_init is None:
         u_k0 = u_mesh_arr
@@ -458,12 +489,26 @@ def solve_periodic_orbit(
 
         dX = jax.lax.cond(is_inv, _solve, _lstsq)
 
+        def _step_score(x_cand: jax.Array) -> jax.Array:
+            rn = jnp.linalg.norm(eval_res(x_cand))
+            if non_trivial:
+                u_m = x_cand[:n_mesh].reshape((N, problem.dim))
+                u_m_mean = jnp.mean(u_m, axis=0, keepdims=True)
+                amp_cand = jnp.sqrt(jnp.mean(jnp.sum((u_m - u_m_mean) ** 2, axis=-1)))
+                collapse_pen = jnp.where(
+                    (amp_init > min_amplitude) & (amp_cand < 0.25 * amp_init),
+                    1e4 * (0.25 * amp_init - amp_cand) ** 2,
+                    0.0,
+                )
+                return rn + collapse_pen
+            return rn
+
         X1 = X + dX
-        r1 = jnp.linalg.norm(eval_res(X1))
+        r1 = _step_score(X1)
         X2 = X + 0.5 * dX
-        r2 = jnp.linalg.norm(eval_res(X2))
+        r2 = _step_score(X2)
         X3 = X + 0.25 * dX
-        r3 = jnp.linalg.norm(eval_res(X3))
+        r3 = _step_score(X3)
 
         X_next = jnp.where(
             r1 < res_norm, X1, jnp.where(r2 < res_norm, X2, jnp.where(r3 < res_norm, X3, X1))
@@ -479,6 +524,11 @@ def solve_periodic_orbit(
 
     X_fin, it_fin, conv_fin, rn_fin = jax.lax.while_loop(cond_fn, body_fn, init_state)
     u_mesh_sol, u_gauss_sol, T_sol = problem.unpack_vars(X_fin)
+    u_mean_sol = jnp.mean(u_mesh_sol, axis=0, keepdims=True)
+    amp_sol = jnp.sqrt(jnp.mean(jnp.sum((u_mesh_sol - u_mean_sol) ** 2, axis=-1)))
+
+    if non_trivial:
+        conv_fin = conv_fin & (amp_sol >= min_amplitude)
 
     return PeriodicOrbitResult(
         mesh=mesh_arr,

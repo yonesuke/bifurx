@@ -80,7 +80,7 @@ def test_ab_reaction_periodic_orbit_from_hopf():
     prob = CollocationProblem(f_ab, dim=2, num_intervals=N, num_gauss_points=4)
 
     mesh, u_mesh_init, u_gauss_init, T0, p_init = initialize_from_hopf(
-        prob, u_hopf, p1_hopf, eps=0.03, p_init=0.128
+        prob, u_hopf, p1_hopf, eps=0.1, p_init=0.130
     )
 
     assert float(T0) > 0.0, f"Hopf period should be positive, got {T0}"
@@ -93,6 +93,7 @@ def test_ab_reaction_periodic_orbit_from_hopf():
         mesh=mesh,
         u_gauss_init=u_gauss_init,
         tol=1e-7,
+        non_trivial=True,
     )
 
     assert bool(sol.converged), "Periodic orbit seeded from Hopf should converge"
@@ -100,3 +101,42 @@ def test_ab_reaction_periodic_orbit_from_hopf():
     # Check max amplitude of u1 is in reasonable limit cycle range (~0.9 - 1.0)
     max_u1 = float(jnp.max(sol.u_mesh[:, 0]))
     assert 0.85 < max_u1 < 1.05, f"Unexpected u1 amplitude: {max_u1}"
+    assert float(sol.amplitude) > 0.05, f"Expected non-trivial amplitude, got {sol.amplitude}"
+
+
+def test_collocation_non_trivial_and_degenerate_hopf():
+    """Test non_trivial option and degenerate Hopf warning in collocation BVP (#14)."""
+    import pytest
+
+    # 1. Non-trivial constraint on trivial equilibrium guess
+    prob = CollocationProblem(f_vdp, dim=2, num_intervals=15, num_gauss_points=3)
+    u_zero = jnp.zeros((15, 2))
+    # Trivial equilibrium u=0 satisfies collocation BVP
+    sol_trivial = solve_periodic_orbit(
+        prob, u_mesh_init=u_zero, T_init=2 * jnp.pi, p=0.2, non_trivial=False
+    )
+    assert bool(sol_trivial.converged)
+    assert float(sol_trivial.amplitude) < 1e-6
+
+    # With non_trivial=True, trivial solution must NOT be accepted as converged limit cycle
+    sol_reject = solve_periodic_orbit(
+        prob, u_mesh_init=u_zero, T_init=2 * jnp.pi, p=0.2, non_trivial=True, min_amplitude=1e-3
+    )
+    assert not bool(sol_reject.converged), (
+        "Trivial equilibrium should not be accepted as limit cycle"
+    )
+
+    # 2. Degenerate Hopf warning when critical eigenvalue has multiplicity >= 2
+    # Two identical oscillators experiencing Hopf simultaneously:
+    def f_double_hopf(u, p):
+        # 4D system: two uncoupled Stuart-Landau oscillators
+        x1, y1, x2, y2 = u[0], u[1], u[2], u[3]
+        dx1 = p * x1 - y1 - (x1**2 + y1**2) * x1
+        dy1 = x1 + p * y1 - (x1**2 + y1**2) * y1
+        dx2 = p * x2 - y2 - (x2**2 + y2**2) * x2
+        dy2 = x2 + p * y2 - (x2**2 + y2**2) * y2
+        return jnp.array([dx1, dy1, dx2, dy2])
+
+    prob_deg = CollocationProblem(f_double_hopf, dim=4, num_intervals=10, num_gauss_points=2)
+    with pytest.warns(UserWarning, match="Degenerate Hopf point detected"):
+        initialize_from_hopf(prob_deg, u_hopf=jnp.zeros(4), p_hopf=0.0, eps=0.01)
