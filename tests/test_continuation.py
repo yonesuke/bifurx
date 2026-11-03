@@ -144,8 +144,11 @@ def test_param_bounds_precedence():
 
 def test_continuation_stop_reason():
     """Test stop_reason reporting on ContinuationResult."""
-    fn = lambda u, p: jnp.array([u[0] ** 2 - p])
-    prob = bx_prob = BifurcationProblem(fn=fn, u0=[1.0], p0=1.0)
+
+    def fn(u, p):
+        return jnp.array([u[0] ** 2 - p])
+
+    prob = BifurcationProblem(fn=fn, u0=[1.0], p0=1.0)
 
     # 1. max_steps
     res_max = continuation(prob, ds=0.01, max_steps=5, param_bounds=(0.0, 10.0))
@@ -156,7 +159,9 @@ def test_continuation_stop_reason():
     assert res_bounds.stop_reason == "bounds"
 
     # 3. corrector_failed
-    fn_fail = lambda u, p: jnp.array([jnp.sqrt(jnp.maximum(p - u[0], -1.0))])
+    def fn_fail(u, p):
+        return jnp.array([jnp.sqrt(jnp.maximum(p - u[0], -1.0))])
+
     prob_fail = BifurcationProblem(fn=fn_fail, u0=[0.0], p0=0.0)
     res_fail = continuation(prob_fail, ds=1.0, max_steps=10, adaptive_step=False)
     assert res_fail.stop_reason == "corrector_failed"
@@ -164,6 +169,7 @@ def test_continuation_stop_reason():
 
 def test_user_supplied_jacobians():
     """Test custom jac_u and jac_p support in BifurcationProblem."""
+
     def fn(u, p):
         return jnp.array([u[0] ** 2 - p])
 
@@ -191,6 +197,3 @@ def test_user_supplied_jacobians():
     res = continuation(prob, ds=0.1, max_steps=15)
     assert res.num_points > 5
     assert jnp.allclose(res.u[:, 0] ** 2, res.p, atol=1e-3)
-
-
-

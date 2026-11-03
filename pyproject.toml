@@ -52,5 +52,9 @@ select = [
 ]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+"src/bifurx/__init__.py" = ["E402"]
+"tests/*" = ["E731"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

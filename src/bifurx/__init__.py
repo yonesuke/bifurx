@@ -4,6 +4,7 @@ A modern reimagining of AUTO-07P.
 """
 
 import logging
+
 import jax
 
 _logger = logging.getLogger("bifurx")
