@@ -3,6 +3,16 @@
 A modern reimagining of AUTO-07P.
 """
 
+import logging
+import jax
+
+_logger = logging.getLogger("bifurx")
+
+# Enable 64-bit precision in JAX by default for numerical continuation.
+if not jax.config.jax_enable_x64:
+    jax.config.update("jax_enable_x64", True)
+    _logger.info("bifurx enabled jax_enable_x64=True for double precision continuation.")
+
 from bifurx.bifurcations.switch import compute_bifurcation_tangents, switch_branch
 from bifurx.bifurcations.test_funcs import (
     bialternate_matrix,
