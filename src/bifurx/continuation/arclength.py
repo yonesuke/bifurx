@@ -372,7 +372,14 @@ def continuation(
     bif_points: list[BifurcationPoint] = []
     if detect_bifurcations and int(p_full.shape[0]) >= 2:
         lp_cross = (tf_lp_full[:-1] * tf_lp_full[1:]) < 0.0
-        bp_cross = (~lp_cross) & ((tf_bp_full[:-1] * tf_bp_full[1:]) < 0.0)
+        bp_span = jnp.maximum(jnp.abs(tf_bp_full[:-1]), jnp.abs(tf_bp_full[1:]))
+        bp_diff = jnp.abs(tf_bp_full[1:] - tf_bp_full[:-1])
+        bp_cross = (
+            (~lp_cross)
+            & ((tf_bp_full[:-1] * tf_bp_full[1:]) < 0.0)
+            & (bp_span > 1e-6)
+            & (bp_diff > 1e-6)
+        )
         hb_valid = (~jnp.isnan(tf_hb_full[:-1])) & (~jnp.isnan(tf_hb_full[1:]))
         hb_cross = (~lp_cross) & (~bp_cross) & hb_valid & ((tf_hb_full[:-1] * tf_hb_full[1:]) < 0.0)
 
@@ -425,6 +432,22 @@ def continuation(
                     print(f"  >>> [{label}] at step {s_idx}: p={float(p_ref):.6f}, u={u_ref}")
 
         bif_points.sort(key=lambda pt: pt.step)
+
+        # De-duplicate bifurcation points (same bif_type and close in parameter & state) (#2)
+        deduped: list[BifurcationPoint] = []
+        for bp in bif_points:
+            is_dup = False
+            for prev in deduped:
+                if (
+                    bp.bif_type == prev.bif_type
+                    and abs(bp.p - prev.p) < 1e-4
+                    and float(jnp.linalg.norm(bp.u - prev.u)) < 1e-3
+                ):
+                    is_dup = True
+                    break
+            if not is_dup:
+                deduped.append(bp)
+        bif_points = deduped
 
     # 4. Determine continuation termination reason
     num_conv = int(jnp.sum(scan_res.converged))

@@ -14,11 +14,26 @@ def test_func_fold(tangent: jax.Array) -> jax.Array:
     return tangent[-1]
 
 
-def test_func_branch_point(Ju: jax.Array) -> jax.Array:
-    """Branch point test function: determinant of Jacobian $\\det(\\nabla_u F)$."""
+def test_func_branch_point(Ju: jax.Array, eigs: jax.Array | None = None) -> jax.Array:
+    """Branch point test function: tracks the real eigenvalue closest to 0 (with sign).
+
+    If no purely real eigenvalue exists, falls back to the signed determinant.
+    This reliably detects simple and even-multiplicity zero eigenvalue crossings
+    (such as degenerate transcritical bifurcations) without misfiring on
+    numerical noise (#2, #13).
+    """
+    eigvals = jnp.linalg.eigvals(Ju) if eigs is None else eigs
+    real_mask = jnp.abs(jnp.imag(eigvals)) < 1e-4
+    real_parts = jnp.real(eigvals)
+    magnitudes = jnp.where(real_mask, jnp.abs(real_parts), jnp.inf)
+    idx = jnp.argmin(magnitudes)
+    closest_real = real_parts[idx]
+
     sign, logdet = jnp.linalg.slogdet(Ju)
     clipped_log = jnp.clip(logdet, -80.0, 80.0)
-    return sign * jnp.exp(clipped_log)
+    det_val = sign * jnp.exp(clipped_log)
+
+    return jnp.where(jnp.any(real_mask), closest_real, det_val)
 
 
 def bialternate_matrix(A: jax.Array) -> jax.Array:
@@ -67,7 +82,7 @@ def evaluate_point_diagnostics(
     is_stable = jnp.all(jnp.real(eigs) < 0.0)
     test_funcs = {
         "LP": test_func_fold(tangent),
-        "BP": test_func_branch_point(Ju),
+        "BP": test_func_branch_point(Ju, eigs=eigs),
         "HB": test_func_hopf(Ju, eigs=eigs),
     }
     return test_funcs, is_stable

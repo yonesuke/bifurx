@@ -258,3 +258,37 @@ def test_lp_refinement_bracket_selection():
     u_ref, p_ref = refine_bifurcation_point(prob, u_a, p_a, tau_a, u_b, p_b, tau_b, bif_type="LP")
     assert jnp.allclose(u_ref, jnp.array([2.0]), atol=1e-3)
     assert jnp.allclose(p_ref, 0.0, atol=1e-3)
+
+
+def test_degenerate_multiplicity_two_zero_eigenvalue():
+    """Test detection of branch point with even multiplicity zero eigenvalue (#13).
+
+    det(Ju) = p^2 >= 0 never changes sign, but tracking real eigenvalue closest to 0
+    successfully detects the bifurcation at p = 0.
+    """
+
+    def f_mult2(u, p):
+        return jnp.array([p * u[0] - u[0] ** 3, p * u[1] - u[1] ** 3])
+
+    prob = BifurcationProblem(fn=f_mult2, u0=[0.0, 0.0], p0=-0.4)
+    res = continuation(prob, ds=0.04, max_steps=25, param_bounds=(-0.5, 0.5))
+
+    bps = res.get_bifurcations("BP")
+    assert len(bps) == 1, f"Expected exactly 1 BP detected, got {len(bps)}: {bps}"
+    assert abs(bps[0].p) < 1e-2, f"BP expected near p=0, got {bps[0].p}"
+
+
+def test_persistently_singular_jacobian_no_spurious_bp():
+    """Test that branch with persistent kernel does not flood spurious BPs (#2)."""
+
+    # System on R^2 where second coordinate has persistent zero row:
+    # J_u = [[1, 0], [0, 0]] has determinant 0 everywhere along branch
+    def f_singular_branch(u, p):
+        return jnp.array([u[0] - p, 0.0 * u[1]])
+
+    prob = BifurcationProblem(fn=f_singular_branch, u0=[0.1, 0.0], p0=0.1)
+    res = continuation(prob, ds=0.05, max_steps=20, param_bounds=(0.0, 1.0))
+
+    # Should NOT have any spurious BPs
+    bps = res.get_bifurcations("BP")
+    assert len(bps) == 0, f"Expected 0 BPs on persistently singular branch, got {len(bps)}"
