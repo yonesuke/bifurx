@@ -141,3 +141,24 @@ def test_param_bounds_precedence():
     assert float(jnp.max(res_override.p)) < 3.0
     assert len(res_override.p) < len(res_default.p)
 
+
+def test_continuation_stop_reason():
+    """Test stop_reason reporting on ContinuationResult."""
+    fn = lambda u, p: jnp.array([u[0] ** 2 - p])
+    prob = bx_prob = BifurcationProblem(fn=fn, u0=[1.0], p0=1.0)
+
+    # 1. max_steps
+    res_max = continuation(prob, ds=0.01, max_steps=5, param_bounds=(0.0, 10.0))
+    assert res_max.stop_reason == "max_steps"
+
+    # 2. bounds
+    res_bounds = continuation(prob, ds=0.1, max_steps=50, param_bounds=(0.5, 2.0))
+    assert res_bounds.stop_reason == "bounds"
+
+    # 3. corrector_failed
+    fn_fail = lambda u, p: jnp.array([jnp.sqrt(jnp.maximum(p - u[0], -1.0))])
+    prob_fail = BifurcationProblem(fn=fn_fail, u0=[0.0], p0=0.0)
+    res_fail = continuation(prob_fail, ds=1.0, max_steps=10, adaptive_step=False)
+    assert res_fail.stop_reason == "corrector_failed"
+
+

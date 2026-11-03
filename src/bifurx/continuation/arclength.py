@@ -42,6 +42,7 @@ class ContinuationResult:
     iterations: jax.Array
     test_function_values: dict[str, jax.Array]
     branch_name: str = "Branch"
+    stop_reason: str = "max_steps"  # "max_steps", "bounds", or "corrector_failed"
 
     @property
     def num_points(self) -> int:
@@ -410,6 +411,25 @@ def continuation(
 
         bif_points.sort(key=lambda pt: pt.step)
 
+    # 4. Determine continuation termination reason
+    num_conv = int(jnp.sum(scan_res.converged))
+    p_min, p_max = _resolve_param_bounds(problem, param_bounds)
+    if num_conv == max_steps:
+        stop_reason = "max_steps"
+    else:
+        # Check if stopped because boundary was crossed
+        p_last = p_full[-1]
+        if (p_last < p_min) or (p_last > p_max):
+            stop_reason = "bounds"
+        else:
+            stop_reason = "corrector_failed"
+
+    if verbose and stop_reason == "corrector_failed":
+        print(
+            f"[{branch_name}] Warning: Newton corrector failed to converge at step {num_conv + 1} "
+            f"(p={float(p_full[-1]):.4f}). Terminated before reaching param_bounds or max_steps."
+        )
+
     return ContinuationResult(
         problem=problem,
         u=u_full,
@@ -425,4 +445,5 @@ def continuation(
             "HB": tf_hb_full,
         },
         branch_name=branch_name,
+        stop_reason=stop_reason,
     )
