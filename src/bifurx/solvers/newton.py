@@ -5,7 +5,6 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array
 
 from bifurx.problem import BifurcationProblem
 from bifurx.solvers.bordered import solve_bordered_system
@@ -14,22 +13,22 @@ from bifurx.solvers.bordered import solve_bordered_system
 class NewtonResultJax(NamedTuple):
     """Result of pure JAX bordered Newton corrector iterations."""
 
-    converged: Array
-    u: Array
-    p: Array
-    iterations: Array
-    residual_norm: Array
-    det_u: Array
+    converged: jax.Array
+    u: jax.Array
+    p: jax.Array
+    iterations: jax.Array
+    residual_norm: jax.Array
+    det_u: jax.Array
 
 
 def bordered_newton_solve_jax(
     problem: BifurcationProblem,
-    u_init: Array,
-    p_init: float | Array,
-    u_prev: Array,
-    p_prev: float | Array,
-    tau_prev: Array,
-    ds: float | Array,
+    u_init: jax.Array,
+    p_init: float | jax.Array,
+    u_prev: jax.Array,
+    p_prev: float | jax.Array,
+    tau_prev: jax.Array,
+    ds: float | jax.Array,
     tol: float = 1e-8,
     step_tol: float = 1e-8,
     max_iters: int = 15,
@@ -48,17 +47,17 @@ def bordered_newton_solve_jax(
     ----------
     problem : BifurcationProblem
         Nonlinear system definition F(u, p) = 0.
-    u_init : Array
+    u_init : jax.Array
         Predicted state vector for corrector start.
-    p_init : float | Array
+    p_init : float | jax.Array
         Predicted continuation parameter value.
-    u_prev : Array
+    u_prev : jax.Array
         Previous converged state vector.
-    p_prev : float | Array
+    p_prev : float | jax.Array
         Previous converged parameter value.
-    tau_prev : Array
+    tau_prev : jax.Array
         Tangent vector [tau_u, tau_p] normalized to unit length.
-    ds : float | Array
+    ds : float | jax.Array
         Step size along arclength.
     tol : float, default=1e-8
         Residual norm convergence tolerance.
@@ -90,13 +89,15 @@ def bordered_newton_solve_jax(
 
     init_state = (u_0, p_0, jnp.int32(0), conv_0, res_norm_0, jnp.array(0.0, dtype=jnp.float64))
 
-    def cond_fn(state: tuple[Array, Array, Array, Array, Array, Array]) -> Array:
+    def cond_fn(
+        state: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+    ) -> jax.Array:
         _u, _p, it, conv, _rn, _sn = state
         return (~conv) & (it < max_iters)
 
     def body_fn(
-        state: tuple[Array, Array, Array, Array, Array, Array],
-    ) -> tuple[Array, Array, Array, Array, Array, Array]:
+        state: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
         u, p, it, _conv, _rn, _sn = state
         f_val = problem.residual(u, p)
         arc_res = jnp.dot(tau_u, u - u_p) + tau_p * (p - p_p) - ds_val
@@ -159,7 +160,7 @@ class NewtonResult:
     """Result of bordered Newton corrector iterations."""
 
     converged: bool
-    u: Array
+    u: jax.Array
     p: float
     iterations: int
     residual_norm: float
@@ -170,12 +171,12 @@ class NewtonResult:
 
 def bordered_newton_solve(
     problem: BifurcationProblem,
-    u_init: Array,
-    p_init: float | Array,
-    u_prev: Array,
-    p_prev: float | Array,
-    tau_prev: Array,
-    ds: float | Array,
+    u_init: jax.Array,
+    p_init: float | jax.Array,
+    u_prev: jax.Array,
+    p_prev: float | jax.Array,
+    tau_prev: jax.Array,
+    ds: float | jax.Array,
     tol: float = 1e-8,
     step_tol: float = 1e-8,
     max_iters: int = 15,
@@ -192,15 +193,15 @@ def bordered_newton_solve(
     ----------
     problem : BifurcationProblem
         Nonlinear system definition F(u, p) = 0.
-    u_init : Array
+    u_init : jax.Array
         Predicted state vector for corrector start.
     p_init : float
         Predicted continuation parameter value.
-    u_prev : Array
+    u_prev : jax.Array
         Previous converged state vector.
     p_prev : float
         Previous converged parameter value.
-    tau_prev : Array
+    tau_prev : jax.Array
         Tangent vector [tau_u, tau_p] normalized to unit length.
     ds : float
         Step size along arclength.

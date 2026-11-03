@@ -5,8 +5,7 @@ from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-from jaxtyping import Array
+from jax.typing import ArrayLike
 
 from bifurx.bifurcations.test_funcs import (
     refine_bifurcation_point,
@@ -16,7 +15,7 @@ from bifurx.bifurcations.test_funcs import (
 )
 from bifurx.problem import BifurcationProblem
 from bifurx.solvers.bordered import solve_bordered_system
-from bifurx.solvers.newton import bordered_newton_solve, bordered_newton_solve_jax
+from bifurx.solvers.newton import bordered_newton_solve_jax
 
 
 @dataclass
@@ -24,10 +23,10 @@ class BifurcationPoint:
     """Detected and refined bifurcation point."""
 
     bif_type: str  # "LP", "BP", "HB"
-    u: Array
+    u: jax.Array
     p: float
     step: int
-    tangent: Array
+    tangent: jax.Array
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -36,14 +35,14 @@ class ContinuationResult:
     """Complete result trajectory of pseudo-arclength continuation."""
 
     problem: BifurcationProblem
-    u: Array
-    p: Array
-    tangents: Array
-    stability: Array
+    u: jax.Array
+    p: jax.Array
+    tangents: jax.Array
+    stability: jax.Array
     bifurcation_points: list[BifurcationPoint]
-    step_sizes: Array
-    iterations: Array
-    test_function_values: dict[str, Array]
+    step_sizes: jax.Array
+    iterations: jax.Array
+    test_function_values: dict[str, jax.Array]
     branch_name: str = "Branch"
 
     @property
@@ -63,16 +62,16 @@ class ContinuationScanResult(NamedTuple):
     Supports unpacking: `(u_trajectory, p_trajectory, tau_trajectory, test_funcs, converged) = res[:5]`.
     """
 
-    u: Array  # shape (n_steps, dim)
-    p: Array  # shape (n_steps,)
-    tangents: Array  # shape (n_steps, dim + 1)
-    test_funcs: dict[str, Array]  # {"LP": Array, "BP": Array, "HB": Array}
-    converged: Array  # shape (n_steps,) bool
-    step_sizes: Array  # shape (n_steps,)
-    iterations: Array  # shape (n_steps,)
+    u: jax.Array  # shape (n_steps, dim)
+    p: jax.Array  # shape (n_steps,)
+    tangents: jax.Array  # shape (n_steps, dim + 1)
+    test_funcs: dict[str, jax.Array]  # {"LP": jax.Array, "BP": jax.Array, "HB": jax.Array}
+    converged: jax.Array  # shape (n_steps,) bool
+    step_sizes: jax.Array  # shape (n_steps,)
+    iterations: jax.Array  # shape (n_steps,)
 
     @property
-    def test_function_values(self) -> dict[str, Array]:
+    def test_function_values(self) -> dict[str, jax.Array]:
         """Alias matching ContinuationResult interface."""
         return self.test_funcs
 
@@ -84,10 +83,10 @@ class ContinuationScanResult(NamedTuple):
 
 def compute_initial_tangent(
     problem: BifurcationProblem,
-    u0: Array | np.ndarray | list[float] | Any,
-    p0: float | Array,
-    direction: float | Array = 1.0,
-) -> Array:
+    u0: ArrayLike | list[float] | Any,
+    p0: float | jax.Array,
+    direction: float | jax.Array = 1.0,
+) -> jax.Array:
     """Compute normalized initial tangent vector (dot{u}, dot{p}) at starting equilibrium."""
     u0_arr = jnp.asarray(u0, dtype=jnp.float64)
     Ju = problem.jacobian_u(u0_arr, p0)
@@ -103,18 +102,18 @@ def compute_initial_tangent(
 
 def continuation_scan(
     problem: BifurcationProblem,
-    u0: Array | np.ndarray | list[float] | Any | None = None,
-    p0: float | Array | None = None,
-    direction: float | Array = 1.0,
-    initial_tangent: Array | None = None,
-    ds: float | Array = 0.05,
-    ds_min: float | Array = 1e-6,
-    ds_max: float | Array = 0.5,
+    u0: ArrayLike | list[float] | Any | None = None,
+    p0: float | jax.Array | None = None,
+    direction: float | jax.Array = 1.0,
+    initial_tangent: jax.Array | None = None,
+    ds: float | jax.Array = 0.05,
+    ds_min: float | jax.Array = 1e-6,
+    ds_max: float | jax.Array = 0.5,
     n_steps: int = 100,
     newton_tol: float = 1e-8,
     newton_step_tol: float = 1e-8,
     newton_max_iters: int = 15,
-    param_bounds: tuple[float, float] | Array | None = None,
+    param_bounds: tuple[float, float] | jax.Array | None = None,
     adaptive_step: bool = False,
     solver_method: str = "auto",
 ) -> ContinuationScanResult:
@@ -131,19 +130,19 @@ def continuation_scan(
     ----------
     problem : BifurcationProblem
         Nonlinear system definition F(u, p) = 0.
-    u0 : Array | None, optional
+    u0 : jax.Array | None, optional
         Starting state vector (defaults to problem.u0).
-    p0 : float | Array | None, optional
+    p0 : float | jax.Array | None, optional
         Starting parameter value (defaults to problem.p0).
-    direction : float | Array, default=1.0
+    direction : float | jax.Array, default=1.0
         Direction of continuation (+1.0 or -1.0).
-    initial_tangent : Array | None, optional
+    initial_tangent : jax.Array | None, optional
         Custom initial tangent vector.
-    ds : float | Array, default=0.05
+    ds : float | jax.Array, default=0.05
         Initial arclength step size.
-    ds_min : float | Array, default=1e-6
+    ds_min : float | jax.Array, default=1e-6
         Minimum step size.
-    ds_max : float | Array, default=0.5
+    ds_max : float | jax.Array, default=0.5
         Maximum step size.
     n_steps : int, default=100
         Number of continuation steps.
@@ -153,7 +152,7 @@ def continuation_scan(
         Step size convergence tolerance for Newton corrector.
     newton_max_iters : int, default=15
         Maximum Newton iterations per step.
-    param_bounds : tuple[float, float] | Array | None, optional
+    param_bounds : tuple[float, float] | jax.Array | None, optional
         Bounds (p_min, p_max) to terminate active continuation.
     adaptive_step : bool, default=False
         Whether to adjust step size dynamically.
@@ -255,9 +254,11 @@ def continuation_scan(
         p_next = jnp.where(converged_step, p_cand, p)
         tau_next = jnp.where(converged_step, tau_cand, tau)
 
-        # Bounds check
+        # Bounds check. Keep the loop active after a failed corrector so that later
+        # scan steps can retry the same point at a reduced step size; once a step
+        # converges we only continue while still inside the parameter bounds.
         in_bounds = (p_next >= p_min) & (p_next <= p_max)
-        is_active_next = converged_step & in_bounds
+        is_active_next = jnp.where(converged_step, in_bounds, is_active)
 
         # 5. Step size adjustment
         if adaptive_step:
@@ -301,10 +302,10 @@ def continuation_scan(
 
 def continuation(
     problem: BifurcationProblem,
-    u0: Array | np.ndarray | list[float] | Any | None = None,
+    u0: ArrayLike | list[float] | Any | None = None,
     p0: float | None = None,
     direction: float = 1.0,
-    initial_tangent: Array | None = None,
+    initial_tangent: jax.Array | None = None,
     ds: float = 0.05,
     ds_min: float = 1e-6,
     ds_max: float = 0.5,
@@ -316,21 +317,24 @@ def continuation(
     adaptive_step: bool = True,
     branch_name: str = "Branch",
     verbose: bool = False,
-    use_scan: bool = False,
 ) -> ContinuationResult:
     """Keller pseudo-arclength continuation loop.
+
+    The trajectory is generated by the pure-JAX ``continuation_scan`` kernel
+    (``jax.lax.scan``); this function assembles the result, computes the stability of
+    every point, and pinpoints LP/BP/HB bifurcations by refinement.
 
     Parameters
     ----------
     problem : BifurcationProblem
         Nonlinear system F(u, p) = 0.
-    u0 : Array | None, optional
+    u0 : jax.Array | None, optional
         Starting state vector (defaults to problem.u0).
     p0 : float | None, optional
         Starting parameter value (defaults to problem.p0).
     direction : float, default=1.0
         Direction of parameter continuation (+1.0 for increasing p, -1.0 for decreasing).
-    initial_tangent : Array | None, optional
+    initial_tangent : jax.Array | None, optional
         Custom initial tangent vector.
     ds : float, default=0.05
         Initial arclength step size.
@@ -353,9 +357,7 @@ def continuation(
     branch_name : str, default="Branch"
         Identifier for this continuation branch.
     verbose : bool, default=False
-        Whether to print step-by-step progress.
-    use_scan : bool, default=False
-        Whether to use pure-JAX jax.lax.scan implementation for end-to-end acceleration.
+        Whether to print detected bifurcations.
 
     Returns
     -------
@@ -366,333 +368,137 @@ def continuation(
     p_cur = problem.p0 if p0 is None else float(p0)
     bounds = param_bounds if param_bounds is not None else problem.param_bounds
 
-    if use_scan:
-        scan_res = continuation_scan(
-            problem=problem,
-            u0=u_cur,
-            p0=p_cur,
-            direction=direction,
-            initial_tangent=initial_tangent,
-            ds=ds,
-            ds_min=ds_min,
-            ds_max=ds_max,
-            n_steps=max_steps,
-            newton_tol=newton_tol,
-            newton_max_iters=newton_max_iters,
-            param_bounds=bounds,
-            adaptive_step=adaptive_step,
-        )
-        u_full = jnp.concatenate([u_cur[None, :], scan_res.u], axis=0)
-        p_full = jnp.concatenate([jnp.atleast_1d(p_cur), scan_res.p], axis=0)
-        tau_init = compute_initial_tangent(problem, u_cur, p_cur, direction=direction)
-        tau_full = jnp.concatenate([tau_init[None, :], scan_res.tangents], axis=0)
-        conv_full = jnp.concatenate([jnp.array([True]), scan_res.converged], axis=0)
-        ds_full = jnp.concatenate([jnp.atleast_1d(ds), scan_res.step_sizes], axis=0)
-        it_full = jnp.concatenate([jnp.array([0]), scan_res.iterations], axis=0)
+    if verbose:
+        print(f"[{branch_name}] Start: p={p_cur:.4f}, u={u_cur}")
 
-        Ju_init = problem.jacobian_u(u_cur, p_cur)
-        tf_lp_init = test_func_fold(tau_init)
-        tf_bp_init = test_func_branch_point(Ju_init)
-        tf_hb_init = test_func_hopf(Ju_init)
+    # 1. Pure-JAX `lax.scan` continuation kernel
+    scan_res = continuation_scan(
+        problem=problem,
+        u0=u_cur,
+        p0=p_cur,
+        direction=direction,
+        initial_tangent=initial_tangent,
+        ds=ds,
+        ds_min=ds_min,
+        ds_max=ds_max,
+        n_steps=max_steps,
+        newton_tol=newton_tol,
+        newton_max_iters=newton_max_iters,
+        param_bounds=bounds,
+        adaptive_step=adaptive_step,
+    )
 
-        tf_lp_full = jnp.concatenate(
-            [jnp.atleast_1d(tf_lp_init), scan_res.test_funcs["LP"]], axis=0
-        )
-        tf_bp_full = jnp.concatenate(
-            [jnp.atleast_1d(tf_bp_init), scan_res.test_funcs["BP"]], axis=0
-        )
-        tf_hb_full = jnp.concatenate(
-            [jnp.atleast_1d(tf_hb_init), scan_res.test_funcs["HB"]], axis=0
-        )
+    # 2. Assemble the full trajectory, including the starting point
+    u_full = jnp.concatenate([u_cur[None, :], scan_res.u], axis=0)
+    p_full = jnp.concatenate([jnp.atleast_1d(p_cur), scan_res.p], axis=0)
+    tau_init = compute_initial_tangent(problem, u_cur, p_cur, direction=direction)
+    tau_full = jnp.concatenate([tau_init[None, :], scan_res.tangents], axis=0)
+    ds_full = jnp.concatenate([jnp.atleast_1d(ds), scan_res.step_sizes], axis=0)
+    it_full = jnp.concatenate([jnp.array([0]), scan_res.iterations], axis=0)
 
-        # Truncate at first non-converged point if any
-        valid_mask = np.asarray(conv_full)
-        if not np.all(valid_mask):
-            first_fail = int(np.argmin(valid_mask))
-            u_full = u_full[:first_fail]
-            p_full = p_full[:first_fail]
-            tau_full = tau_full[:first_fail]
-            ds_full = ds_full[:first_fail]
-            it_full = it_full[:first_fail]
-            tf_lp_full = tf_lp_full[:first_fail]
-            tf_bp_full = tf_bp_full[:first_fail]
-            tf_hb_full = tf_hb_full[:first_fail]
-
-        bif_points: list[BifurcationPoint] = []
-        if detect_bifurcations:
-            n_pts = len(p_full)
-            for s in range(1, n_pts):
-                # LP
-                if float(tf_lp_full[s - 1] * tf_lp_full[s]) < 0:
-                    u_lp, p_lp = refine_bifurcation_point(
-                        problem,
-                        u_full[s - 1],
-                        float(p_full[s - 1]),
-                        tau_full[s - 1],
-                        u_full[s],
-                        float(p_full[s]),
-                        tau_full[s],
-                        "LP",
-                    )
-                    bif_points.append(
-                        BifurcationPoint("LP", u_lp, p_lp, s, tau_full[s], {"step": s})
-                    )
-                # BP
-                elif float(tf_bp_full[s - 1] * tf_bp_full[s]) < 0:
-                    u_bp, p_bp = refine_bifurcation_point(
-                        problem,
-                        u_full[s - 1],
-                        float(p_full[s - 1]),
-                        tau_full[s - 1],
-                        u_full[s],
-                        float(p_full[s]),
-                        tau_full[s],
-                        "BP",
-                    )
-                    bif_points.append(
-                        BifurcationPoint("BP", u_bp, p_bp, s, tau_full[s], {"step": s})
-                    )
-                # HB
-                elif not np.isnan(float(tf_hb_full[s - 1])) and not np.isnan(float(tf_hb_full[s])):
-                    if float(tf_hb_full[s - 1] * tf_hb_full[s]) < 0:
-                        u_hb, p_hb = refine_bifurcation_point(
-                            problem,
-                            u_full[s - 1],
-                            float(p_full[s - 1]),
-                            tau_full[s - 1],
-                            u_full[s],
-                            float(p_full[s]),
-                            tau_full[s],
-                            "HB",
-                        )
-                        bif_points.append(
-                            BifurcationPoint("HB", u_hb, p_hb, s, tau_full[s], {"step": s})
-                        )
-
-        return ContinuationResult(
-            problem=problem,
-            u=u_full,
-            p=p_full,
-            tangents=tau_full,
-            stability=jnp.ones(len(p_full), dtype=bool),
-            bifurcation_points=bif_points,
-            step_sizes=ds_full,
-            iterations=it_full,
-            test_function_values={
-                "LP": tf_lp_full,
-                "BP": tf_bp_full,
-                "HB": tf_hb_full,
-            },
-            branch_name=branch_name,
-        )
-
-    # Initial tangent
-    if initial_tangent is not None:
-        tau_cur = jnp.asarray(initial_tangent, dtype=jnp.float64)
-        tau_cur = tau_cur / jnp.linalg.norm(tau_cur)
-    else:
-        tau_cur = compute_initial_tangent(problem, u_cur, p_cur, direction=direction)
-
-    # Initial stability & test functions
     Ju_init = problem.jacobian_u(u_cur, p_cur)
-    eigs_init = np.linalg.eigvals(np.asarray(Ju_init))
-    is_stable = bool(np.all(np.real(eigs_init) < 0))
-
-    tf_lp_init = test_func_fold(tau_cur)
+    tf_lp_init = test_func_fold(tau_init)
     tf_bp_init = test_func_branch_point(Ju_init)
     tf_hb_init = test_func_hopf(Ju_init)
 
-    u_history = [u_cur]
-    p_history = [p_cur]
-    tangent_history = [tau_cur]
-    stability_history = [is_stable]
-    step_sizes = [ds]
-    iterations_history = [0]
-    tf_lp_history = [tf_lp_init]
-    tf_bp_history = [tf_bp_init]
-    tf_hb_history = [tf_hb_init]
-    bifurcation_points: list[BifurcationPoint] = []
+    tf_lp_full = jnp.concatenate([jnp.atleast_1d(tf_lp_init), scan_res.test_funcs["LP"]], axis=0)
+    tf_bp_full = jnp.concatenate([jnp.atleast_1d(tf_bp_init), scan_res.test_funcs["BP"]], axis=0)
+    tf_hb_full = jnp.concatenate([jnp.atleast_1d(tf_hb_init), scan_res.test_funcs["HB"]], axis=0)
 
-    cur_ds = ds
-    n = problem.dim
+    # 3. Keep the initial point and every step that actually converged. Failed
+    # corrector attempts are retried at a reduced step size and dropped here.
+    keep = jnp.concatenate([jnp.array([True]), scan_res.converged], axis=0)
+    u_full = u_full[keep]
+    p_full = p_full[keep]
+    tau_full = tau_full[keep]
+    ds_full = ds_full[keep]
+    it_full = it_full[keep]
+    tf_lp_full = tf_lp_full[keep]
+    tf_bp_full = tf_bp_full[keep]
+    tf_hb_full = tf_hb_full[keep]
 
-    if verbose:
-        print(f"[{branch_name}] Start: p={p_cur:.4f}, u={np.asarray(u_cur)}")
+    # 4. Stability along the retained trajectory
+    stability = []
+    for s in range(len(p_full)):
+        eigs_s = jnp.linalg.eigvals(problem.jacobian_u(u_full[s], p_full[s]))
+        stability.append(bool(jnp.all(jnp.real(eigs_s) < 0)))
 
-    step = 0
-    while step < max_steps:
-        step += 1
-
-        # 1. Tangent predictor
-        u_pred = u_cur + cur_ds * tau_cur[:n]
-        p_pred = p_cur + cur_ds * float(tau_cur[-1])
-
-        # 2. Bordered Newton corrector
-        res = bordered_newton_solve(
-            problem=problem,
-            u_init=u_pred,
-            p_init=p_pred,
-            u_prev=u_cur,
-            p_prev=p_cur,
-            tau_prev=tau_cur,
-            ds=cur_ds,
-            tol=newton_tol,
-            max_iters=newton_max_iters,
-        )
-
-        if not res.converged:
-            if adaptive_step and cur_ds > 2 * ds_min:
-                cur_ds = max(cur_ds * 0.5, ds_min)
-                if verbose:
-                    print(
-                        f"[{branch_name}] Step {step}: Corrector failed, reducing ds to {cur_ds:.4e}"
-                    )
-                continue
-            else:
-                if verbose:
-                    print(
-                        f"[{branch_name}] Corrector failed at step {step} with ds={cur_ds:.4e}. Stopping."
-                    )
-                break
-
-        u_next = res.u
-        p_next = res.p
-
-        # 3. Tangent update at converged solution
-        Ju_next = problem.jacobian_u(u_next, p_next)
-        Jp_next = problem.jacobian_p(u_next, p_next)
-
-        sol_tau = solve_bordered_system(
-            A=Ju_next,
-            b=Jp_next,
-            c=tau_cur[:n],
-            d=float(tau_cur[-1]),
-            f=jnp.zeros(n, dtype=jnp.float64),
-            g=1.0,
-        )
-        tau_next = sol_tau.z
-        tau_norm = float(jnp.linalg.norm(tau_next))
-        if tau_norm > 1e-12:
-            tau_next = tau_next / tau_norm
-        else:
-            tau_next = tau_cur
-
-        # Orientation preservation: <tau_next, tau_cur> > 0
-        if float(jnp.dot(tau_next, tau_cur)) < 0:
-            tau_next = -tau_next
-
-        # 4. Stability & Test functions
-        eigs_next = np.linalg.eigvals(np.asarray(Ju_next))
-        is_stable_next = bool(np.all(np.real(eigs_next) < 0))
-
-        tf_lp_next = test_func_fold(tau_next)
-        tf_bp_next = test_func_branch_point(Ju_next)
-        tf_hb_next = test_func_hopf(Ju_next)
-
-        # 5. Bifurcation Detection & Refinement
-        if detect_bifurcations:
-            # Test 1: Limit Point / Fold (LP) - dot{p} zero crossing
-            lp_detected = False
-            if tf_lp_history[-1] * tf_lp_next < 0:
-                lp_detected = True
+    # 5. Bifurcation detection & refinement
+    bif_points: list[BifurcationPoint] = []
+    if detect_bifurcations:
+        n_pts = len(p_full)
+        for s in range(1, n_pts):
+            # Limit Point / Fold (LP): dot{p} zero crossing
+            if float(tf_lp_full[s - 1] * tf_lp_full[s]) < 0:
                 u_lp, p_lp = refine_bifurcation_point(
-                    problem, u_cur, p_cur, tau_cur, u_next, p_next, tau_next, "LP"
+                    problem,
+                    u_full[s - 1],
+                    float(p_full[s - 1]),
+                    tau_full[s - 1],
+                    u_full[s],
+                    float(p_full[s]),
+                    tau_full[s],
+                    "LP",
                 )
-                bif_pt = BifurcationPoint(
-                    bif_type="LP",
-                    u=u_lp,
-                    p=p_lp,
-                    step=step,
-                    tangent=tau_next,
-                    details={"step": step},
-                )
-                bifurcation_points.append(bif_pt)
+                bif_points.append(BifurcationPoint("LP", u_lp, p_lp, s, tau_full[s], {"step": s}))
                 if verbose:
-                    print(f"  >>> [FOLD / LP] at step {step}: p={p_lp:.6f}, u={np.asarray(u_lp)}")
-
-            # Test 2: Branch Point (BP) - det(Ju) sign change (excluding Folds)
-            if not lp_detected and (tf_bp_history[-1] * tf_bp_next < 0):
+                    print(f"  >>> [FOLD / LP] at step {s}: p={p_lp:.6f}, u={u_lp}")
+            # Branch Point (BP): det(Ju) sign change (excluding Folds)
+            elif float(tf_bp_full[s - 1] * tf_bp_full[s]) < 0:
                 u_bp, p_bp = refine_bifurcation_point(
-                    problem, u_cur, p_cur, tau_cur, u_next, p_next, tau_next, "BP"
+                    problem,
+                    u_full[s - 1],
+                    float(p_full[s - 1]),
+                    tau_full[s - 1],
+                    u_full[s],
+                    float(p_full[s]),
+                    tau_full[s],
+                    "BP",
                 )
-                bif_pt = BifurcationPoint(
-                    bif_type="BP",
-                    u=u_bp,
-                    p=p_bp,
-                    step=step,
-                    tangent=tau_next,
-                    details={"step": step, "Ju": Ju_next},
-                )
-                bifurcation_points.append(bif_pt)
-                if verbose:
-                    print(
-                        f"  >>> [BRANCH POINT / BP] at step {step}: p={p_bp:.6f}, u={np.asarray(u_bp)}"
+                bif_points.append(
+                    BifurcationPoint(
+                        "BP",
+                        u_bp,
+                        p_bp,
+                        s,
+                        tau_full[s],
+                        {"step": s, "Ju": problem.jacobian_u(u_full[s], p_full[s])},
                     )
-
-            # Test 3: Hopf Bifurcation (HB) - complex eigenvalue real part crossing
-            if not np.isnan(tf_hb_history[-1]) and not np.isnan(tf_hb_next):
-                if tf_hb_history[-1] * tf_hb_next < 0:
+                )
+                if verbose:
+                    print(f"  >>> [BRANCH POINT / BP] at step {s}: p={p_bp:.6f}, u={u_bp}")
+            # Hopf Bifurcation (HB): complex eigenvalue real part crossing
+            elif not bool(jnp.isnan(tf_hb_full[s - 1])) and not bool(jnp.isnan(tf_hb_full[s])):
+                if float(tf_hb_full[s - 1] * tf_hb_full[s]) < 0:
                     u_hb, p_hb = refine_bifurcation_point(
-                        problem, u_cur, p_cur, tau_cur, u_next, p_next, tau_next, "HB"
+                        problem,
+                        u_full[s - 1],
+                        float(p_full[s - 1]),
+                        tau_full[s - 1],
+                        u_full[s],
+                        float(p_full[s]),
+                        tau_full[s],
+                        "HB",
                     )
-                    bif_pt = BifurcationPoint(
-                        bif_type="HB",
-                        u=u_hb,
-                        p=p_hb,
-                        step=step,
-                        tangent=tau_next,
-                        details={"step": step},
+                    bif_points.append(
+                        BifurcationPoint("HB", u_hb, p_hb, s, tau_full[s], {"step": s})
                     )
-                    bifurcation_points.append(bif_pt)
                     if verbose:
-                        print(
-                            f"  >>> [HOPF / HB] at step {step}: p={p_hb:.6f}, u={np.asarray(u_hb)}"
-                        )
-
-        # Append state
-        u_history.append(u_next)
-        p_history.append(p_next)
-        tangent_history.append(tau_next)
-        stability_history.append(is_stable_next)
-        step_sizes.append(cur_ds)
-        iterations_history.append(res.iterations)
-        tf_lp_history.append(tf_lp_next)
-        tf_bp_history.append(tf_bp_next)
-        tf_hb_history.append(tf_hb_next)
-
-        # 6. Adaptive step control
-        if adaptive_step:
-            if res.iterations <= 3:
-                cur_ds = min(cur_ds * 2.0, ds_max)
-            elif res.iterations >= 7:
-                cur_ds = max(cur_ds * 0.5, ds_min)
-
-        # Check bounds
-        if bounds is not None:
-            p_min, p_max = bounds
-            if p_next < p_min or p_next > p_max:
-                if verbose:
-                    print(
-                        f"[{branch_name}] Parameter reached bounds [{p_min}, {p_max}]: p={p_next:.4f}"
-                    )
-                break
-
-        # Advance current state
-        u_cur, p_cur, tau_cur = u_next, p_next, tau_next
+                        print(f"  >>> [HOPF / HB] at step {s}: p={p_hb:.6f}, u={u_hb}")
 
     return ContinuationResult(
         problem=problem,
-        u=jnp.stack(u_history, axis=0),
-        p=jnp.array(p_history),
-        tangents=jnp.stack(tangent_history, axis=0),
-        stability=jnp.array(stability_history, dtype=bool),
-        bifurcation_points=bifurcation_points,
-        step_sizes=jnp.array(step_sizes),
-        iterations=jnp.array(iterations_history),
+        u=u_full,
+        p=p_full,
+        tangents=tau_full,
+        stability=jnp.asarray(stability, dtype=bool),
+        bifurcation_points=bif_points,
+        step_sizes=ds_full,
+        iterations=it_full,
         test_function_values={
-            "LP": jnp.array(tf_lp_history),
-            "BP": jnp.array(tf_bp_history),
-            "HB": jnp.array(tf_hb_history),
+            "LP": tf_lp_full,
+            "BP": tf_bp_full,
+            "HB": tf_hb_full,
         },
         branch_name=branch_name,
     )

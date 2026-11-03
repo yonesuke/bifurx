@@ -4,7 +4,6 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array
 
 
 class BorderedSolution(NamedTuple):
@@ -13,18 +12,23 @@ class BorderedSolution(NamedTuple):
     Supports unpacking: `x, y = sol`.
     """
 
-    x: Array
-    y: Array
+    x: jax.Array
+    y: jax.Array
 
     @property
-    def z(self) -> Array:
+    def z(self) -> jax.Array:
         """Concatenated solution vector [x, y]."""
         return jnp.concatenate([self.x.ravel(), jnp.atleast_1d(self.y)])
 
 
 def _build_bordered_matrix(
-    A: Array, b: Array, c: Array, d: float | Array, f: Array, g: float | Array
-) -> tuple[Array, Array]:
+    A: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    d: float | jax.Array,
+    f: jax.Array,
+    g: float | jax.Array,
+) -> tuple[jax.Array, jax.Array]:
     """Construct full (n+1) x (n+1) matrix M and RHS vector r."""
     b_col = b.reshape(-1, 1)
     c_row = c.reshape(1, -1)
@@ -35,12 +39,12 @@ def _build_bordered_matrix(
 
 
 def solve_bordered_block(
-    A: Array,
-    b: Array,
-    c: Array,
-    d: float | Array,
-    f: Array,
-    g: float | Array,
+    A: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    d: float | jax.Array,
+    f: jax.Array,
+    g: float | jax.Array,
 ) -> BorderedSolution:
     """Solve bordered linear system using Block LU / Sherman-Morrison-Woodbury elimination.
 
@@ -63,12 +67,12 @@ def solve_bordered_block(
 
 
 def solve_bordered_direct(
-    A: Array,
-    b: Array,
-    c: Array,
-    d: float | Array,
-    f: Array,
-    g: float | Array,
+    A: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    d: float | jax.Array,
+    f: jax.Array,
+    g: float | jax.Array,
     rcond: float = 1e-12,
 ) -> BorderedSolution:
     """Solve bordered linear system via direct factorization or SVD/least-squares fallback."""
@@ -78,10 +82,10 @@ def solve_bordered_direct(
     s = jnp.linalg.svdvals(M)
     is_invertible = (s[-1] / (s[0] + 1e-30)) > rcond
 
-    def _solve_inv() -> Array:
+    def _solve_inv() -> jax.Array:
         return jnp.linalg.solve(M, r)
 
-    def _solve_lstsq() -> Array:
+    def _solve_lstsq() -> jax.Array:
         return jnp.linalg.lstsq(M, r, rcond=rcond)[0]
 
     z = jax.lax.cond(is_invertible, _solve_inv, _solve_lstsq)
@@ -89,12 +93,12 @@ def solve_bordered_direct(
 
 
 def solve_bordered_system(
-    A: Array,
-    b: Array,
-    c: Array,
-    d: float | Array,
-    f: Array,
-    g: float | Array,
+    A: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    d: float | jax.Array,
+    f: jax.Array,
+    g: float | jax.Array,
     method: str = "auto",
     rcond: float = 1e-10,
 ) -> BorderedSolution:
@@ -104,17 +108,17 @@ def solve_bordered_system(
 
     Parameters
     ----------
-    A : Array of shape (n, n)
+    A : jax.Array of shape (n, n)
         Leading block matrix.
-    b : Array of shape (n,) or (n, 1)
+    b : jax.Array of shape (n,) or (n, 1)
         Right border vector.
-    c : Array of shape (n,) or (1, n)
+    c : jax.Array of shape (n,) or (1, n)
         Bottom border vector.
-    d : float or Array
+    d : float or jax.Array
         Scalar corner element.
-    f : Array of shape (n,)
+    f : jax.Array of shape (n,)
         Top RHS vector.
-    g : float or Array
+    g : float or jax.Array
         Bottom RHS scalar.
     method : str, default="auto"
         Solver method: "block" (Block LU), "direct" (full bordered solve), or "auto"
@@ -148,7 +152,7 @@ def solve_bordered_system(
         # Safe A to prevent NaNs in non-executed branch under autodiff/JIT
         A_safe = jnp.where(is_A_good, A, jnp.eye(n, dtype=A.dtype))
 
-        def _block_branch() -> tuple[Array, Array]:
+        def _block_branch() -> tuple[jax.Array, jax.Array]:
             rhs = jnp.stack([b_flat, f_flat], axis=-1)
             sol_vw = jnp.linalg.solve(A_safe, rhs)
             v = sol_vw[:, 0]
@@ -157,12 +161,12 @@ def solve_bordered_system(
             # Check if delta is non-zero
             is_delta_good = jnp.abs(delta) > rcond
 
-            def _compute_block() -> tuple[Array, Array]:
+            def _compute_block() -> tuple[jax.Array, jax.Array]:
                 y_val = (g_scalar - jnp.dot(c_flat, w)) / delta
                 x_val = w - y_val * v
                 return x_val, jnp.squeeze(y_val)
 
-            def _compute_fallback_direct() -> tuple[Array, Array]:
+            def _compute_fallback_direct() -> tuple[jax.Array, jax.Array]:
                 sol = solve_bordered_direct(
                     A, b_flat, c_flat, d_scalar, f_flat, g_scalar, rcond=rcond
                 )
@@ -170,7 +174,7 @@ def solve_bordered_system(
 
             return jax.lax.cond(is_delta_good, _compute_block, _compute_fallback_direct)
 
-        def _direct_branch() -> tuple[Array, Array]:
+        def _direct_branch() -> tuple[jax.Array, jax.Array]:
             sol = solve_bordered_direct(A, b_flat, c_flat, d_scalar, f_flat, g_scalar, rcond=rcond)
             return sol.x, sol.y
 

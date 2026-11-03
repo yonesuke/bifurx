@@ -14,8 +14,6 @@ authors = [
 dependencies = [
     "jax",
     "jaxlib",
-    "equinox",
-    "lineax",
     "numpy",
     "matplotlib",
 ]
@@ -29,7 +27,6 @@ dev = [
 test = [
     "pytest",
     "pytest-cov",
-    "scipy",
 ]
 docs = [
     "jupyter-book>=2.0",

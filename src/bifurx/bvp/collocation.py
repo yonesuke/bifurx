@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
-from jaxtyping import Array
+from jax.typing import ArrayLike
 
 
-def gauss_legendre_nodes(m: int) -> tuple[np.ndarray, np.ndarray]:
+def gauss_legendre_nodes(m: int) -> tuple[jax.Array, jax.Array]:
     """Compute normalized Gauss-Legendre quadrature nodes and weights on [0, 1].
+
+    Uses the Golub-Welsch algorithm (eigen-decomposition of the Legendre Jacobi matrix)
+    so no host NumPy/SciPy quadrature routine is required.
 
     Parameters
     ----------
@@ -20,16 +22,24 @@ def gauss_legendre_nodes(m: int) -> tuple[np.ndarray, np.ndarray]:
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
+    tuple[jax.Array, jax.Array]
         (nodes, weights) where nodes are in (0, 1) and sum(weights) == 1.0.
     """
-    x, w = np.polynomial.legendre.leggauss(m)
-    rho = 0.5 * (x + 1.0)
-    weights = 0.5 * w
+    if m == 1:
+        return jnp.array([0.5], dtype=jnp.float64), jnp.array([1.0], dtype=jnp.float64)
+
+    k = jnp.arange(1, m, dtype=jnp.float64)
+    beta = k / jnp.sqrt(4.0 * k**2 - 1.0)
+    jacobi = jnp.diag(beta, 1) + jnp.diag(beta, -1)
+    nodes, vecs = jnp.linalg.eigh(jacobi)
+    weights_raw = 2.0 * vecs[0, :] ** 2
+
+    rho = 0.5 * (nodes + 1.0)
+    weights = 0.5 * weights_raw
     return rho, weights
 
 
-def collocation_matrices(m: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def collocation_matrices(m: int) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """Compute Lagrange differentiation and boundary extrapolation matrices for Gauss collocation.
 
     Nodes on [0, 1] are s = [0, rho_1, ..., rho_m].
@@ -41,20 +51,21 @@ def collocation_matrices(m: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    tuple[jax.Array, jax.Array, jax.Array, jax.Array]
         - D: shape (m, m + 1), derivative matrix D_ij = L'_j(rho_i).
         - C: shape (m + 1,), continuity vector C_j = L_j(1.0).
         - rho: shape (m,), Gauss nodes in (0, 1).
         - weights: shape (m,), Gauss weights.
     """
     rho, weights = gauss_legendre_nodes(m)
-    s = np.concatenate([[0.0], rho])
+    rho_list = [float(v) for v in rho]
+    s = [0.0, *rho_list]
     n_nodes = m + 1
 
-    # D matrix: derivative of Lagrange basis at rho_i
-    D = np.zeros((m, n_nodes), dtype=np.float64)
+    # D matrix: derivative of Lagrange basis at rho_i (host precomputation)
+    D = [[0.0] * n_nodes for _ in range(m)]
     for i in range(m):
-        xi = rho[i]
+        xi = rho_list[i]
         for j in range(n_nodes):
             dL_j = 0.0
             for k in range(n_nodes):
@@ -64,10 +75,10 @@ def collocation_matrices(m: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np
                         if l_idx != j and l_idx != k:
                             prod *= (xi - s[l_idx]) / (s[j] - s[l_idx])
                     dL_j += prod / (s[j] - s[k])
-            D[i, j] = dL_j
+            D[i][j] = dL_j
 
     # C vector: Lagrange basis evaluated at 1.0
-    C = np.zeros(n_nodes, dtype=np.float64)
+    C = [0.0] * n_nodes
     for j in range(n_nodes):
         val = 1.0
         for k in range(n_nodes):
@@ -75,17 +86,22 @@ def collocation_matrices(m: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np
                 val *= (1.0 - s[k]) / (s[j] - s[k])
         C[j] = val
 
-    return D, C, rho, weights
+    return (
+        jnp.asarray(D, dtype=jnp.float64),
+        jnp.asarray(C, dtype=jnp.float64),
+        rho,
+        weights,
+    )
 
 
-def eval_lagrange_basis(xi: float | Array, nodes: np.ndarray | Array) -> Array:
+def eval_lagrange_basis(xi: float | jax.Array, nodes: ArrayLike) -> jax.Array:
     """Evaluate Lagrange basis polynomials L_j(xi) for nodes s."""
     nodes_arr = jnp.asarray(nodes, dtype=jnp.float64)
     n_nodes = nodes_arr.shape[0]
     xi_val = jnp.asarray(xi, dtype=jnp.float64)
 
     # Vectorized evaluation
-    def _basis_j(j: int) -> Array:
+    def _basis_j(j: int) -> jax.Array:
         # Product over k != j: (xi - s[k]) / (s[j] - s[k])
         terms = jnp.where(
             jnp.arange(n_nodes) == j,
@@ -100,17 +116,17 @@ def eval_lagrange_basis(xi: float | Array, nodes: np.ndarray | Array) -> Array:
 class PeriodicOrbitResultJax(NamedTuple):
     """Result of pure JAX collocation BVP solve."""
 
-    mesh: Array
-    u_mesh: Array  # shape (N, dim)
-    u_gauss: Array  # shape (N, m, dim)
-    period: Array
-    converged: Array
-    iterations: Array
-    residual_norm: Array
+    mesh: jax.Array
+    u_mesh: jax.Array  # shape (N, dim)
+    u_gauss: jax.Array  # shape (N, m, dim)
+    period: jax.Array
+    converged: jax.Array
+    iterations: jax.Array
+    residual_norm: jax.Array
     problem: CollocationProblem
 
     @property
-    def T(self) -> Array:
+    def T(self) -> jax.Array:
         """Alias for period."""
         return self.period
 
@@ -118,9 +134,9 @@ class PeriodicOrbitResultJax(NamedTuple):
 class PeriodicOrbitResult(NamedTuple):
     """Result of solving a periodic orbit via collocation BVP."""
 
-    mesh: Array
-    u_mesh: Array  # shape (N, dim)
-    u_gauss: Array  # shape (N, m, dim)
+    mesh: jax.Array
+    u_mesh: jax.Array  # shape (N, dim)
+    u_gauss: jax.Array  # shape (N, m, dim)
     period: float
     converged: bool
     iterations: int
@@ -132,17 +148,19 @@ class PeriodicOrbitResult(NamedTuple):
         """Alias for period."""
         return self.period
 
-    def evaluate(self, t: float | Array) -> Array:
+    def evaluate(self, t: float | jax.Array) -> jax.Array:
         """Evaluate continuous periodic orbit state u(t) at any normalized phase t in [0, 1]."""
         return self.problem.eval_solution(self, t)
 
 
-class CollocationProblem(eqx.Module):
+@jax.tree_util.register_pytree_node_class
+@dataclasses.dataclass(frozen=True)
+class CollocationProblem:
     """PyTree dataclass representing the Gauss-Legendre collocation BVP for periodic orbits.
 
     Parameters
     ----------
-    fn : Callable[..., Array]
+    fn : Callable[..., jax.Array]
         Right-hand side function f(u, p, **kwargs) returning 1D state derivative.
     dim : int
         Dimension of state vector u.
@@ -154,42 +172,73 @@ class CollocationProblem(eqx.Module):
         Additional parameters passed to `fn`.
     """
 
-    fn: Callable[..., Array] = eqx.field(static=True)
-    dim: int = eqx.field(static=True)
-    D: Array
-    C: Array
-    rho: Array
-    weights: Array
-    num_intervals: int = eqx.field(default=25, static=True)
-    num_gauss_points: int = eqx.field(default=4, static=True)
-    kwargs: dict[str, Any] = eqx.field(default_factory=dict, static=True)
+    fn: Callable[..., jax.Array]
+    dim: int
+    D: jax.Array
+    C: jax.Array
+    rho: jax.Array
+    weights: jax.Array
+    num_intervals: int = 25
+    num_gauss_points: int = 4
+    kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __init__(
         self,
-        fn: Callable[..., Array],
+        fn: Callable[..., jax.Array],
         dim: int,
         num_intervals: int = 25,
         num_gauss_points: int = 4,
         **kwargs: Any,
     ) -> None:
-        self.fn = fn
-        self.dim = dim
-        self.num_intervals = int(num_intervals)
-        self.num_gauss_points = int(num_gauss_points)
-        self.kwargs = kwargs
+        object.__setattr__(self, "fn", fn)
+        object.__setattr__(self, "dim", dim)
+        object.__setattr__(self, "num_intervals", int(num_intervals))
+        object.__setattr__(self, "num_gauss_points", int(num_gauss_points))
+        object.__setattr__(self, "kwargs", kwargs)
 
-        D_np, C_np, rho_np, weights_np = collocation_matrices(self.num_gauss_points)
-        self.D = jnp.asarray(D_np, dtype=jnp.float64)
-        self.C = jnp.asarray(C_np, dtype=jnp.float64)
-        self.rho = jnp.asarray(rho_np, dtype=jnp.float64)
-        self.weights = jnp.asarray(weights_np, dtype=jnp.float64)
+        D_arr, C_arr, rho_arr, weights_arr = collocation_matrices(self.num_gauss_points)
+        object.__setattr__(self, "D", D_arr)
+        object.__setattr__(self, "C", C_arr)
+        object.__setattr__(self, "rho", rho_arr)
+        object.__setattr__(self, "weights", weights_arr)
+
+    def tree_flatten(
+        self,
+    ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], tuple[Any, ...]]:
+        """Flatten into JAX pytree leaves ``(D, C, rho, weights)`` and static auxiliary data."""
+        children = (self.D, self.C, self.rho, self.weights)
+        aux = (self.fn, self.dim, self.num_intervals, self.num_gauss_points, self.kwargs)
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(
+        cls,
+        aux: tuple[Any, ...],
+        children: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+    ) -> CollocationProblem:
+        """Rebuild a problem from JAX pytree leaves without re-running ``__init__``."""
+        fn, dim, num_intervals, num_gauss_points, kwargs = aux
+        D, C, rho, weights = children
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "fn", fn)
+        object.__setattr__(obj, "dim", dim)
+        object.__setattr__(obj, "num_intervals", num_intervals)
+        object.__setattr__(obj, "num_gauss_points", num_gauss_points)
+        object.__setattr__(obj, "kwargs", kwargs)
+        object.__setattr__(obj, "D", D)
+        object.__setattr__(obj, "C", C)
+        object.__setattr__(obj, "rho", rho)
+        object.__setattr__(obj, "weights", weights)
+        return obj
 
     @property
     def total_dim(self) -> int:
         """Total number of scalar unknowns: N * (m + 1) * dim + 1 (period T)."""
         return self.num_intervals * (self.num_gauss_points + 1) * self.dim + 1
 
-    def pack_vars(self, u_mesh: Array, u_gauss: Array, period: float | Array) -> Array:
+    def pack_vars(
+        self, u_mesh: jax.Array, u_gauss: jax.Array, period: float | jax.Array
+    ) -> jax.Array:
         """Pack (u_mesh, u_gauss, period) into a single 1D flat vector."""
         return jnp.concatenate(
             [
@@ -199,7 +248,7 @@ class CollocationProblem(eqx.Module):
             ]
         )
 
-    def unpack_vars(self, X: Array) -> tuple[Array, Array, Array]:
+    def unpack_vars(self, X: jax.Array) -> tuple[jax.Array, jax.Array, jax.Array]:
         """Unpack 1D flat vector into (u_mesh, u_gauss, period)."""
         N = self.num_intervals
         m = self.num_gauss_points
@@ -214,12 +263,12 @@ class CollocationProblem(eqx.Module):
 
     def residual(
         self,
-        X: Array,
-        p: float | Array,
-        mesh: Array,
-        u_ref_mesh: Array | None = None,
-        u_ref_gauss: Array | None = None,
-    ) -> Array:
+        X: jax.Array,
+        p: float | jax.Array,
+        mesh: jax.Array,
+        u_ref_mesh: jax.Array | None = None,
+        u_ref_gauss: jax.Array | None = None,
+    ) -> jax.Array:
         """Evaluate collocation BVP residual vector of dimension N*(m+1)*dim + 1."""
         u_mesh, u_gauss, T = self.unpack_vars(X)
 
@@ -259,80 +308,76 @@ class CollocationProblem(eqx.Module):
     @jax.jit
     def eval_residual(
         self,
-        X: Array,
-        p: float | Array,
-        mesh: Array,
-        u_ref_mesh: Array,
-        u_ref_gauss: Array,
-    ) -> Array:
+        X: jax.Array,
+        p: float | jax.Array,
+        mesh: jax.Array,
+        u_ref_mesh: jax.Array,
+        u_ref_gauss: jax.Array,
+    ) -> jax.Array:
         """JIT-compiled evaluation of residual vector."""
         return self.residual(X, p, mesh, u_ref_mesh=u_ref_mesh, u_ref_gauss=u_ref_gauss)
 
     @jax.jit
     def eval_jacobian(
         self,
-        X: Array,
-        p: float | Array,
-        mesh: Array,
-        u_ref_mesh: Array,
-        u_ref_gauss: Array,
-    ) -> Array:
+        X: jax.Array,
+        p: float | jax.Array,
+        mesh: jax.Array,
+        u_ref_mesh: jax.Array,
+        u_ref_gauss: jax.Array,
+    ) -> jax.Array:
         """JIT-compiled evaluation of residual Jacobian dR/dX."""
         return jax.jacobian(
             lambda x_: self.residual(x_, p, mesh, u_ref_mesh=u_ref_mesh, u_ref_gauss=u_ref_gauss)
         )(X)
 
-    def eval_solution(self, sol: PeriodicOrbitResult, t: float | Array) -> Array:
+    def eval_solution(self, sol: PeriodicOrbitResult, t: float | jax.Array) -> jax.Array:
         """Evaluate continuous solution u(t) at any phase t in [0, 1]."""
-        mesh = np.asarray(sol.mesh)
-        u_mesh = np.asarray(sol.u_mesh)
-        u_gauss = np.asarray(sol.u_gauss)
-        s_nodes = np.concatenate([[0.0], np.asarray(self.rho)])
+        mesh = jnp.asarray(sol.mesh)
+        u_mesh = jnp.asarray(sol.u_mesh)
+        u_gauss = jnp.asarray(sol.u_gauss)
         m = self.num_gauss_points
         N = self.num_intervals
+        s_nodes = jnp.concatenate([jnp.zeros(1), jnp.asarray(self.rho)])  # (m + 1,)
 
-        t_arr = np.atleast_1d(np.asarray(t, dtype=np.float64)) % 1.0
+        is_scalar = jnp.ndim(t) == 0
+        t_arr = jnp.atleast_1d(jnp.asarray(t, dtype=jnp.float64)) % 1.0
 
-        results = []
-        for ti in t_arr:
-            # Find interval index k where mesh[k] <= ti <= mesh[k+1]
-            k = int(np.searchsorted(mesh, ti, side="right") - 1)
-            k = max(0, min(N - 1, k))
-            hk = mesh[k + 1] - mesh[k]
-            xi = (ti - mesh[k]) / (hk + 1e-30)
-            xi = max(0.0, min(1.0, xi))
+        # Locate interval k where mesh[k] <= t <= mesh[k + 1]
+        k = jnp.clip(jnp.searchsorted(mesh, t_arr, side="right") - 1, 0, N - 1)
+        hk = mesh[k + 1] - mesh[k]
+        xi = jnp.clip((t_arr - mesh[k]) / (hk + 1e-30), 0.0, 1.0)
 
-            U_k = np.vstack([u_mesh[k][None, :], u_gauss[k]])  # (m + 1, n)
-            # Evaluate Lagrange basis
-            L_vals = np.ones(m + 1, dtype=np.float64)
-            for j in range(m + 1):
-                for l_idx in range(m + 1):
-                    if l_idx != j:
-                        L_vals[j] *= (xi - s_nodes[l_idx]) / (s_nodes[j] - s_nodes[l_idx])
+        # U: shape (T, m + 1, n) with u_mesh at index 0 and u_gauss at indices 1..m
+        U_k = jnp.concatenate([u_mesh[k][:, None, :], u_gauss[k]], axis=1)
 
-            u_eval = L_vals @ U_k
-            results.append(u_eval)
+        # Lagrange basis L[t, j] = prod_{l != j} (xi_t - s_l) / (s_j - s_l)
+        keep = ~jnp.eye(m + 1, dtype=bool)
+        numer = xi[:, None, None] - s_nodes[None, None, :]
+        denom = s_nodes[None, :, None] - s_nodes[None, None, :]
+        ratio = jnp.where(keep, numer / (denom + 1e-30), 1.0)
+        L_vals = jnp.prod(ratio, axis=-1)  # (T, m + 1)
 
-        res_arr = jnp.asarray(np.array(results))
-        if jnp.asarray(t).ndim == 0:
-            return res_arr[0]
-        return res_arr
+        u_eval = jnp.einsum("tj,tjn->tn", L_vals, U_k)
+        if is_scalar:
+            return u_eval[0]
+        return u_eval
 
 
 def initialize_from_hopf(
     problem: CollocationProblem,
-    u_hopf: Array | np.ndarray,
+    u_hopf: ArrayLike,
     p_hopf: float,
     eps: float = 0.02,
     p_init: float | None = None,
-) -> tuple[Array, Array, Array, float, float]:
+) -> tuple[jax.Array, jax.Array, jax.Array, float, float]:
     """Construct an initial periodic orbit guess near a Hopf bifurcation.
 
     Parameters
     ----------
     problem : CollocationProblem
         The collocation problem instance.
-    u_hopf : Array | np.ndarray
+    u_hopf : jax.Array
         Equilibrium state vector at the Hopf point.
     p_hopf : float
         Parameter value at the Hopf point.
@@ -345,55 +390,58 @@ def initialize_from_hopf(
     -------
     tuple[mesh, u_mesh, u_gauss, T0, p_init]
     """
-    u_h = np.asarray(u_hopf, dtype=np.float64)
+    u_h = jnp.asarray(u_hopf, dtype=jnp.float64)
     # Compute Jacobian at Hopf
     jac_fn = jax.jacobian(lambda u_: problem.fn(u_, p_hopf, **problem.kwargs))
-    Ju = np.asarray(jac_fn(jnp.asarray(u_h)))
+    Ju = jac_fn(u_h)
 
-    eigs, vecs = np.linalg.eig(Ju)
+    eigs, vecs = jnp.linalg.eig(Ju)
     # Find pair with smallest |Re(lambda)| and non-zero Im(lambda)
-    imag_indices = [i for i, val in enumerate(eigs) if abs(np.imag(val)) > 1e-4]
-    if not imag_indices:
+    complex_mask = jnp.abs(jnp.imag(eigs)) > 1e-4
+    if not bool(jnp.any(complex_mask)):
         msg = "No complex-conjugate eigenvalues found at provided equilibrium."
         raise ValueError(msg)
 
-    chosen_idx = imag_indices[int(np.argmin(np.abs(np.real(eigs[imag_indices]))))]
+    real_abs = jnp.where(complex_mask, jnp.abs(jnp.real(eigs)), jnp.inf)
+    chosen_idx = int(jnp.argmin(real_abs))
     val = eigs[chosen_idx]
-    omega = float(abs(np.imag(val)))
-    T0 = 2.0 * np.pi / omega
+    omega = float(jnp.abs(jnp.imag(val)))
+    T0 = 2.0 * jnp.pi / omega
     vec = vecs[:, chosen_idx]
 
-    v_r = np.real(vec)
-    v_i = np.imag(vec)
-    norm_v = np.sqrt(np.dot(v_r, v_r) + np.dot(v_i, v_i))
-    v_r /= norm_v
-    v_i /= norm_v
+    v_r = jnp.real(vec)
+    v_i = jnp.imag(vec)
+    norm_v = jnp.sqrt(jnp.dot(v_r, v_r) + jnp.dot(v_i, v_i))
+    v_r = v_r / norm_v
+    v_i = v_i / norm_v
 
     N = problem.num_intervals
     m = problem.num_gauss_points
-    mesh = np.linspace(0.0, 1.0, N + 1)
-    rho = np.asarray(problem.rho)
+    mesh = jnp.linspace(0.0, 1.0, N + 1)
+    rho = jnp.asarray(problem.rho)
 
-    u_mesh = np.zeros((N, problem.dim))
-    u_gauss = np.zeros((N, m, problem.dim))
+    u_mesh = jnp.zeros((N, problem.dim))
+    u_gauss = jnp.zeros((N, m, problem.dim))
 
     for k in range(N):
         t_k = mesh[k]
-        theta_k = 2.0 * np.pi * t_k
-        u_mesh[k] = u_h + eps * (v_r * np.cos(theta_k) - v_i * np.sin(theta_k))
+        theta_k = 2.0 * jnp.pi * t_k
+        u_mesh = u_mesh.at[k].set(u_h + eps * (v_r * jnp.cos(theta_k) - v_i * jnp.sin(theta_k)))
         hk = mesh[k + 1] - mesh[k]
         for i in range(m):
             t_g = t_k + hk * rho[i]
-            theta_g = 2.0 * np.pi * t_g
-            u_gauss[k, i] = u_h + eps * (v_r * np.cos(theta_g) - v_i * np.sin(theta_g))
+            theta_g = 2.0 * jnp.pi * t_g
+            u_gauss = u_gauss.at[k, i].set(
+                u_h + eps * (v_r * jnp.cos(theta_g) - v_i * jnp.sin(theta_g))
+            )
 
     if p_init is None:
         p_init = p_hopf - 0.001
 
     return (
-        jnp.asarray(mesh),
-        jnp.asarray(u_mesh),
-        jnp.asarray(u_gauss),
+        mesh,
+        u_mesh,
+        u_gauss,
         float(T0),
         float(p_init),
     )
@@ -401,13 +449,13 @@ def initialize_from_hopf(
 
 def solve_periodic_orbit_jax(
     problem: CollocationProblem,
-    u_mesh_init: Array | np.ndarray,
-    T_init: float | Array,
-    p: float | Array,
-    mesh: Array | np.ndarray | None = None,
-    u_gauss_init: Array | np.ndarray | None = None,
-    u_ref_mesh: Array | np.ndarray | None = None,
-    u_ref_gauss: Array | np.ndarray | None = None,
+    u_mesh_init: ArrayLike,
+    T_init: float | jax.Array,
+    p: float | jax.Array,
+    mesh: ArrayLike | None = None,
+    u_gauss_init: ArrayLike | None = None,
+    u_ref_mesh: ArrayLike | None = None,
+    u_ref_gauss: ArrayLike | None = None,
     tol: float = 1e-8,
     max_iters: int = 25,
 ) -> PeriodicOrbitResultJax:
@@ -420,15 +468,15 @@ def solve_periodic_orbit_jax(
     ----------
     problem : CollocationProblem
         Collocation problem definition.
-    u_mesh_init : Array of shape (N, dim)
+    u_mesh_init : jax.Array of shape (N, dim)
         Initial guess for state at mesh nodes.
-    T_init : float | Array
+    T_init : float | jax.Array
         Initial guess for orbit period T.
-    p : float | Array
+    p : float | jax.Array
         Continuation parameter value.
-    mesh : Array of shape (N + 1,) | None, optional
+    mesh : jax.Array of shape (N + 1,) | None, optional
         Normalized time grid in [0, 1]. Defaults to uniform linspace.
-    u_gauss_init : Array of shape (N, m, dim) | None, optional
+    u_gauss_init : jax.Array of shape (N, m, dim) | None, optional
         Initial guess at Gauss collocation nodes. Defaults to vectorized linear interpolation.
     u_ref_mesh, u_ref_gauss : optional
         Reference solution for integral phase pinning condition.
@@ -481,13 +529,13 @@ def solve_periodic_orbit_jax(
 
     init_state = (X_init, jnp.int32(0), conv_0, res_norm_0)
 
-    def cond_fn(state: tuple[Array, Array, Array, Array]) -> Array:
+    def cond_fn(state: tuple[jax.Array, jax.Array, jax.Array, jax.Array]) -> jax.Array:
         _, it, conv, _ = state
         return (~conv) & (it < max_iters)
 
     def body_fn(
-        state: tuple[Array, Array, Array, Array],
-    ) -> tuple[Array, Array, Array, Array]:
+        state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         X, it, _, res_norm = state
         res = problem.residual(
             X, p_arr, mesh_arr, u_ref_mesh=u_ref_mesh_arr, u_ref_gauss=u_ref_gauss_arr
@@ -501,10 +549,10 @@ def solve_periodic_orbit_jax(
         s = jnp.linalg.svdvals(J)
         is_inv = (s[-1] / (s[0] + 1e-30)) > 1e-12
 
-        def _solve() -> Array:
+        def _solve() -> jax.Array:
             return -jnp.linalg.solve(J, res)
 
-        def _lstsq() -> Array:
+        def _lstsq() -> jax.Array:
             return -jnp.linalg.lstsq(J, res, rcond=1e-12)[0]
 
         dX = jax.lax.cond(is_inv, _solve, _lstsq)
@@ -557,13 +605,13 @@ def solve_periodic_orbit_jax(
 
 def solve_periodic_orbit(
     problem: CollocationProblem,
-    u_mesh_init: Array | np.ndarray,
-    T_init: float | Array,
-    p: float | Array,
-    mesh: Array | np.ndarray | None = None,
-    u_gauss_init: Array | np.ndarray | None = None,
-    u_ref_mesh: Array | np.ndarray | None = None,
-    u_ref_gauss: Array | np.ndarray | None = None,
+    u_mesh_init: ArrayLike,
+    T_init: float | jax.Array,
+    p: float | jax.Array,
+    mesh: ArrayLike | None = None,
+    u_gauss_init: ArrayLike | None = None,
+    u_ref_mesh: ArrayLike | None = None,
+    u_ref_gauss: ArrayLike | None = None,
     tol: float = 1e-8,
     max_iters: int = 25,
     use_jit: bool = False,
@@ -574,15 +622,15 @@ def solve_periodic_orbit(
     ----------
     problem : CollocationProblem
         Collocation problem definition.
-    u_mesh_init : Array of shape (N, dim)
+    u_mesh_init : jax.Array of shape (N, dim)
         Initial guess for state at mesh nodes.
-    T_init : float | Array
+    T_init : float | jax.Array
         Initial guess for orbit period T.
-    p : float | Array
+    p : float | jax.Array
         Continuation parameter value.
-    mesh : Array of shape (N + 1,) | None, optional
+    mesh : jax.Array of shape (N + 1,) | None, optional
         Normalized time grid in [0, 1]. Defaults to uniform linspace.
-    u_gauss_init : Array of shape (N, m, dim) | None, optional
+    u_gauss_init : jax.Array of shape (N, m, dim) | None, optional
         Initial guess at Gauss collocation nodes. Defaults to linear interpolation.
     u_ref_mesh, u_ref_gauss : optional
         Reference solution for integral phase pinning condition.
@@ -643,14 +691,13 @@ def solve_periodic_orbit(
 
     if u_gauss_init is None:
         # Interpolate linearly between adjacent mesh nodes
+        rho = problem.rho
         u_gauss_list = []
-        rho_np = np.asarray(problem.rho)
         for k in range(N):
-            u_k0 = np.asarray(u_mesh_arr[k])
-            u_k1 = np.asarray(u_mesh_arr[(k + 1) % N])
-            u_g_k = [(1.0 - r) * u_k0 + r * u_k1 for r in rho_np]
-            u_gauss_list.append(u_g_k)
-        u_gauss_arr = jnp.asarray(np.array(u_gauss_list))
+            u_k0 = u_mesh_arr[k]
+            u_k1 = u_mesh_arr[(k + 1) % N]
+            u_gauss_list.append((1.0 - rho[:, None]) * u_k0[None, :] + rho[:, None] * u_k1[None, :])
+        u_gauss_arr = jnp.stack(u_gauss_list)
     else:
         u_gauss_arr = jnp.asarray(u_gauss_init, dtype=jnp.float64)
 
@@ -676,11 +723,11 @@ def solve_periodic_orbit(
             break
 
         J = problem.eval_jacobian(X, p_arr, mesh_arr, u_ref_mesh, u_ref_gauss)
-        # Solve linear Newton step
-        try:
+        # Finite-mask solve: fall back to least-squares on a singular/near-singular Jacobian
+        s = jnp.linalg.svdvals(J)
+        if float(s[-1] / (s[0] + 1e-30)) > 1e-12:
             dX = -jnp.linalg.solve(J, res)
-        except Exception:
-            # Fallback to least-squares in case of near-singular tangent
+        else:
             dX = -jnp.linalg.lstsq(J, res)[0]
 
         # Simple backtracking line search

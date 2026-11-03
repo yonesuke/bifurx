@@ -15,7 +15,7 @@ For decades, software packages such as **AUTO-07P**, **MATCONT**, and **COCO** h
 - **Automatic Differentiation**: Exact state and parameter Jacobians ($\nabla_u F$, $\nabla_p F$) via `jax.jacobian`—no hand-derived matrices or numerical errors.
 - **Directional Higher-Order Derivatives**: High-order directional derivatives for branch switching computed via nested JAX Jacobian-vector products (`jax.jvp`).
 - **Hardware Acceleration & JIT Compilation**: Core bordered solvers and residuals compile to high-performance machine code via XLA.
-- **Pythonic & Composable API**: Pure functional design compatible with `equinox` PyTrees and modern numerical packages.
+- **Pythonic & Composable API**: Pure functional design built on native JAX PyTrees, compatible with `jax.jit`, `jax.vmap`, and modern numerical packages.
 
 ---
 
