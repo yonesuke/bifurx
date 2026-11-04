@@ -5,6 +5,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from bifurx.options import NewtonOptions
 from bifurx.problem import BifurcationProblem
 from bifurx.solvers.bordered import solve_bordered_system
 
@@ -28,10 +29,11 @@ def bordered_newton_solve(
     p_prev: float | jax.Array,
     tau_prev: jax.Array,
     ds: float | jax.Array,
-    tol: float = 1e-8,
-    step_tol: float = 1e-8,
-    max_iters: int = 15,
-    solver_method: str = "auto",
+    tol: float | None = None,
+    step_tol: float | None = None,
+    max_iters: int | None = None,
+    solver_method: str | None = None,
+    options: NewtonOptions | None = None,
 ) -> NewtonResult:
     """Pure-JAX bordered Newton corrector for pseudo-arclength continuation.
 
@@ -58,20 +60,28 @@ def bordered_newton_solve(
         Tangent vector [tau_u, tau_p] normalized to unit length.
     ds : float | jax.Array
         Step size along arclength.
-    tol : float, default=1e-8
-        Residual norm convergence tolerance.
-    step_tol : float, default=1e-8
-        Step size convergence tolerance.
-    max_iters : int, default=15
-        Maximum Newton iterations.
-    solver_method : str, default="auto"
+    tol : float | None, optional
+        Residual norm convergence tolerance (defaults to options.tol).
+    step_tol : float | None, optional
+        Step size convergence tolerance (defaults to options.step_tol).
+    max_iters : int | None, optional
+        Maximum Newton iterations (defaults to options.max_iters).
+    solver_method : str | None, optional
         Method for solving bordered linear systems: "auto", "block", or "direct".
+    options : NewtonOptions | None, optional
+        Newton solver options instance. Overridden by explicit kwargs.
 
     Returns
     -------
     NewtonResult
         NamedTuple containing JAX array results (converged, u, p, iterations, residual_norm, det_u).
     """
+    base_opts = NewtonOptions() if options is None else options
+    tol_val = base_opts.tol if tol is None else tol
+    step_tol_val = base_opts.step_tol if step_tol is None else step_tol
+    max_iters_val = base_opts.max_iters if max_iters is None else max_iters
+    solver_method_val = base_opts.solver_method if solver_method is None else solver_method
+
     n = problem.dim
     u_0 = jnp.asarray(u_init, dtype=jnp.float64)
     p_0 = jnp.squeeze(jnp.asarray(p_init, dtype=jnp.float64))
@@ -85,7 +95,7 @@ def bordered_newton_solve(
     f_0 = problem.residual(u_0, p_0)
     arc_0 = jnp.dot(tau_u, u_0 - u_p) + tau_p * (p_0 - p_p) - ds_val
     res_norm_0 = jnp.sqrt(jnp.sum(f_0**2) + arc_0**2)
-    conv_0 = res_norm_0 < tol
+    conv_0 = res_norm_0 < tol_val
 
     init_state = (u_0, p_0, jnp.int32(0), conv_0, res_norm_0, jnp.array(0.0, dtype=jnp.float64))
 
@@ -93,7 +103,7 @@ def bordered_newton_solve(
         state: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
     ) -> jax.Array:
         _u, _p, it, conv, _rn, _sn = state
-        return (~conv) & (it < max_iters)
+        return (~conv) & (it < max_iters_val)
 
     def body_fn(
         state: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
@@ -112,7 +122,7 @@ def bordered_newton_solve(
             d=tau_p,
             f=-f_val,
             g=-arc_res,
-            method=solver_method,
+            method=solver_method_val,
         )
         du = sol.x
         dp = jnp.squeeze(sol.y)
@@ -132,9 +142,10 @@ def bordered_newton_solve(
             & jnp.isfinite(dp)
         )
         conv_next = is_valid & (
-            (res_norm_next < tol) | ((step_norm < step_tol) & (res_norm_next < 10.0 * tol))
+            (res_norm_next < tol_val)
+            | ((step_norm < step_tol_val) & (res_norm_next < 10.0 * tol_val))
         )
-        it_next = jnp.where(is_valid, it + 1, jnp.int32(max_iters))
+        it_next = jnp.where(is_valid, it + 1, jnp.int32(max_iters_val))
         return (u_next, p_next, it_next, conv_next, res_norm_next, step_norm)
 
     u_fin, p_fin, it_fin, conv_fin, res_fin, _step_fin = jax.lax.while_loop(

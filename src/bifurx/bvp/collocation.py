@@ -9,6 +9,8 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
+from bifurx.options import CollocationOptions, ContinuationOptions
+
 
 def gauss_legendre_nodes(m: int) -> tuple[jax.Array, jax.Array]:
     """Compute normalized Gauss-Legendre quadrature nodes and weights on [0, 1].
@@ -149,14 +151,19 @@ class CollocationProblem:
         self,
         fn: Callable[..., jax.Array],
         dim: int,
-        num_intervals: int = 25,
-        num_gauss_points: int = 4,
+        num_intervals: int | None = None,
+        num_gauss_points: int | None = None,
+        options: CollocationOptions | None = None,
         **kwargs: Any,
     ) -> None:
+        base_opts = CollocationOptions() if options is None else options
+        n_int = base_opts.num_intervals if num_intervals is None else int(num_intervals)
+        n_gauss = base_opts.num_gauss_points if num_gauss_points is None else int(num_gauss_points)
+
         object.__setattr__(self, "fn", fn)
         object.__setattr__(self, "dim", dim)
-        object.__setattr__(self, "num_intervals", int(num_intervals))
-        object.__setattr__(self, "num_gauss_points", int(num_gauss_points))
+        object.__setattr__(self, "num_intervals", n_int)
+        object.__setattr__(self, "num_gauss_points", n_gauss)
         object.__setattr__(self, "kwargs", kwargs)
 
         D_arr, C_arr, rho_arr, weights_arr = collocation_matrices(self.num_gauss_points)
@@ -289,8 +296,9 @@ def initialize_from_hopf(
     problem: CollocationProblem,
     u_hopf: ArrayLike,
     p_hopf: float | jax.Array,
-    eps: float | jax.Array = 0.02,
+    eps: float | jax.Array | None = None,
     p_init: float | jax.Array | None = None,
+    options: CollocationOptions | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Construct an initial periodic orbit guess near a Hopf bifurcation in pure JAX.
 
@@ -302,18 +310,23 @@ def initialize_from_hopf(
         Equilibrium state vector at the Hopf point.
     p_hopf : float | jax.Array
         Parameter value at the Hopf point.
-    eps : float | jax.Array, default=0.02
-        Perturbation amplitude for the initial cycle.
+    eps : float | jax.Array | None, optional
+        Perturbation amplitude for the initial cycle (defaults to options.eps).
     p_init : float | jax.Array | None, optional
         Initial parameter slightly detuned from Hopf. Defaults to p_hopf - 0.001.
+    options : CollocationOptions | None, optional
+        Collocation options configuration. Overridden by explicit eps.
 
     Returns
     -------
     tuple[mesh, u_mesh, u_gauss, T0, p_init]
     """
+    base_eps = options.eps if options is not None else CollocationOptions().eps
+    eps_input = base_eps if eps is None else eps
+
     u_h = jnp.asarray(u_hopf, dtype=jnp.float64)
     p_h = jnp.squeeze(jnp.asarray(p_hopf, dtype=jnp.float64))
-    eps_val = jnp.squeeze(jnp.asarray(eps, dtype=jnp.float64))
+    eps_val = jnp.squeeze(jnp.asarray(eps_input, dtype=jnp.float64))
 
     Ju = jax.jacobian(lambda u_: problem.fn(u_, p_h, **problem.kwargs))(u_h)
     eigs, vecs = jnp.linalg.eig(Ju)
@@ -380,10 +393,11 @@ def solve_periodic_orbit(
     u_gauss_init: ArrayLike | None = None,
     u_ref_mesh: ArrayLike | None = None,
     u_ref_gauss: ArrayLike | None = None,
-    tol: float = 1e-8,
-    max_iters: int = 25,
+    tol: float | None = None,
+    max_iters: int | None = None,
     non_trivial: bool = False,
-    min_amplitude: float = 1e-4,
+    min_amplitude: float | None = None,
+    options: CollocationOptions | None = None,
 ) -> PeriodicOrbitResult:
     """Solve for a periodic orbit (u(t), T) using pure-JAX Gauss-Legendre collocation.
 
@@ -406,21 +420,28 @@ def solve_periodic_orbit(
         Initial guess at Gauss collocation nodes. Defaults to vectorized linear interpolation.
     u_ref_mesh, u_ref_gauss : optional
         Reference solution for integral phase pinning condition.
-    tol : float, default=1e-8
-        Convergence tolerance for Newton residual norm.
-    max_iters : int, default=25
-        Maximum Newton iterations.
+    tol : float | None, optional
+        Convergence tolerance for Newton residual norm (defaults to options.tol).
+    max_iters : int | None, optional
+        Maximum Newton iterations (defaults to options.max_iters).
     non_trivial : bool, default=False
         If True, forbids collapsing onto the trivial constant equilibrium by penalizing
         zero amplitude during Newton iterations and requiring amplitude >= min_amplitude (#14).
-    min_amplitude : float, default=1e-4
-        Minimum RMS amplitude required for non_trivial=True.
+    min_amplitude : float | None, optional
+        Minimum RMS amplitude required for non_trivial=True (defaults to options.min_amplitude).
+    options : CollocationOptions | None, optional
+        Collocation options configuration. Overridden by explicit kwargs.
 
     Returns
     -------
     PeriodicOrbitResult
         Result containing mesh, u_mesh, u_gauss, period, converged, iterations, residual_norm.
     """
+    base_opts = CollocationOptions() if options is None else options
+    tol_val = base_opts.tol if tol is None else tol
+    max_iters_val = base_opts.max_iters if max_iters is None else max_iters
+    min_amp_val = base_opts.min_amplitude if min_amplitude is None else min_amplitude
+
     N = problem.num_intervals
     n_mesh = N * problem.dim
 
@@ -464,13 +485,13 @@ def solve_periodic_orbit(
 
     r0 = eval_res(X_init)
     res_norm_0 = jnp.linalg.norm(r0)
-    conv_0 = res_norm_0 < tol
+    conv_0 = res_norm_0 < tol_val
 
     init_state = (X_init, jnp.int32(0), conv_0, res_norm_0)
 
     def cond_fn(state: tuple[jax.Array, jax.Array, jax.Array, jax.Array]) -> jax.Array:
         _, it, conv, _ = state
-        return (~conv) & (it < max_iters)
+        return (~conv) & (it < max_iters_val)
 
     def body_fn(
         state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
@@ -497,7 +518,7 @@ def solve_periodic_orbit(
                 u_m_mean = jnp.mean(u_m, axis=0, keepdims=True)
                 amp_cand = jnp.sqrt(jnp.mean(jnp.sum((u_m - u_m_mean) ** 2, axis=-1)))
                 collapse_pen = jnp.where(
-                    (amp_init > min_amplitude) & (amp_cand < 0.25 * amp_init),
+                    (amp_init > min_amp_val) & (amp_cand < 0.25 * amp_init),
                     1e4 * (0.25 * amp_init - amp_cand) ** 2,
                     0.0,
                 )
@@ -519,8 +540,8 @@ def solve_periodic_orbit(
         )
 
         is_valid = jnp.isfinite(rn_next) & jnp.all(jnp.isfinite(X_next))
-        conv_next = is_valid & (rn_next < tol)
-        it_next = jnp.where(is_valid, it + 1, jnp.int32(max_iters))
+        conv_next = is_valid & (rn_next < tol_val)
+        it_next = jnp.where(is_valid, it + 1, jnp.int32(max_iters_val))
         return (X_next, it_next, conv_next, rn_next)
 
     X_fin, it_fin, conv_fin, rn_fin = jax.lax.while_loop(cond_fn, body_fn, init_state)
@@ -529,7 +550,7 @@ def solve_periodic_orbit(
     amp_sol = jnp.sqrt(jnp.mean(jnp.sum((u_mesh_sol - u_mean_sol) ** 2, axis=-1)))
 
     if non_trivial:
-        conv_fin = conv_fin & (amp_sol >= min_amplitude)
+        conv_fin = conv_fin & (amp_sol >= min_amp_val)
 
     return PeriodicOrbitResult(
         mesh=mesh_arr,
@@ -549,16 +570,18 @@ def continue_periodic_orbit(
     initial_orbit: PeriodicOrbitResult,
     p_start: float | jax.Array,
     p_end: float | jax.Array,
-    dp: float | jax.Array = 0.01,
-    dp_min: float = 1e-5,
-    dp_max: float = 0.1,
-    max_steps: int = 100,
+    dp: float | jax.Array | None = None,
+    dp_min: float | None = None,
+    dp_max: float | None = None,
+    max_steps: int | None = None,
     param_mode: str = "natural",
     param_weight: float | None = None,
     non_trivial: bool = True,
-    tol: float = 1e-7,
-    max_iters: int = 25,
+    tol: float | None = None,
+    max_iters: int | None = None,
     verbose: bool = False,
+    options: ContinuationOptions | CollocationOptions | None = None,
+    collocation_options: CollocationOptions | None = None,
 ) -> list[PeriodicOrbitResult]:
     """Continue a family of periodic orbits along parameter p (#15).
 
@@ -576,13 +599,13 @@ def continue_periodic_orbit(
         Starting parameter value.
     p_end : float | jax.Array
         Target end parameter value.
-    dp : float | jax.Array, default=0.01
+    dp : float | jax.Array | None, optional
         Initial parameter step size.
-    dp_min : float, default=1e-5
+    dp_min : float | None, optional
         Minimum allowed step size before terminating.
-    dp_max : float, default=0.1
+    dp_max : float | None, optional
         Maximum allowed step size.
-    max_steps : int, default=100
+    max_steps : int | None, optional
         Maximum continuation steps.
     param_mode : str, default='natural'
         Continuation mode: 'natural' for fixed-parameter stepping with adaptive reduction.
@@ -590,22 +613,76 @@ def continue_periodic_orbit(
         Scaling factor for parameter direction.
     non_trivial : bool, default=True
         Whether to enforce non-trivial periodic orbit constraint.
-    tol : float, default=1e-7
+    tol : float | None, optional
         Convergence tolerance for collocation Newton solver.
-    max_iters : int, default=25
+    max_iters : int | None, optional
         Maximum iterations per collocation solve.
     verbose : bool, default=False
         If True, print continuation step progress.
+    options : ContinuationOptions | CollocationOptions | None, optional
+        Continuation or Collocation options instance. Overridden by explicit kwargs.
+    collocation_options : CollocationOptions | None, optional
+        Specific collocation options when options is a ContinuationOptions instance.
 
     Returns
     -------
     list[PeriodicOrbitResult]
         List of converged periodic orbit results along the parameter branch.
     """
+    if isinstance(options, ContinuationOptions):
+        cont_opts = options
+        coll_opts = CollocationOptions() if collocation_options is None else collocation_options
+    elif isinstance(options, CollocationOptions):
+        cont_opts = ContinuationOptions()
+        coll_opts = options
+    else:
+        cont_opts = ContinuationOptions()
+        coll_opts = CollocationOptions() if collocation_options is None else collocation_options
+
+    if dp is not None:
+        cur_dp = float(abs(float(dp)))
+    elif isinstance(options, ContinuationOptions):
+        cur_dp = float(abs(float(cont_opts.ds)))
+    else:
+        cur_dp = 0.01
+
+    if dp_min is not None:
+        dp_min_val = float(dp_min)
+    elif isinstance(options, ContinuationOptions):
+        dp_min_val = float(cont_opts.ds_min)
+    else:
+        dp_min_val = 1e-5
+
+    if dp_max is not None:
+        dp_max_val = float(dp_max)
+    elif isinstance(options, ContinuationOptions):
+        dp_max_val = float(cont_opts.ds_max)
+    else:
+        dp_max_val = 0.1
+
+    max_steps_val = int(cont_opts.max_steps if max_steps is None else max_steps)
+
+    if tol is not None:
+        tol_val = float(tol)
+    elif isinstance(options, CollocationOptions) or collocation_options is not None:
+        tol_val = float(coll_opts.tol)
+    elif isinstance(options, ContinuationOptions):
+        tol_val = float(cont_opts.newton.tol)
+    else:
+        tol_val = 1e-7
+
+    if max_iters is not None:
+        max_iters_val = int(max_iters)
+    elif isinstance(options, CollocationOptions) or collocation_options is not None:
+        max_iters_val = int(coll_opts.max_iters)
+    elif isinstance(options, ContinuationOptions):
+        max_iters_val = int(cont_opts.newton.max_iters)
+    else:
+        max_iters_val = coll_opts.max_iters
+
     p_s = float(p_start)
     p_e = float(p_end)
     direction = 1.0 if p_e >= p_s else -1.0
-    cur_dp = float(abs(float(dp)))
 
     if initial_orbit.p is None:
         initial_orbit = initial_orbit._replace(p=jnp.asarray(p_s, dtype=jnp.float64))
@@ -615,7 +692,7 @@ def continue_periodic_orbit(
     p_cur = p_s
 
     step = 0
-    while step < max_steps and (direction * (p_e - p_cur) > 1e-9):
+    while step < max_steps_val and (direction * (p_e - p_cur) > 1e-9):
         p_target = p_cur + direction * cur_dp
         if direction > 0 and p_target > p_e:
             p_target = p_e
@@ -631,8 +708,8 @@ def continue_periodic_orbit(
             u_gauss_init=current_orbit.u_gauss,
             u_ref_mesh=current_orbit.u_mesh,
             u_ref_gauss=current_orbit.u_gauss,
-            tol=tol,
-            max_iters=max_iters,
+            tol=tol_val,
+            max_iters=max_iters_val,
             non_trivial=non_trivial,
         )
 
@@ -646,13 +723,15 @@ def continue_periodic_orbit(
                     f"amp={float(sol.amplitude):.5f}, iters={int(sol.iterations)}"
                 )
             if int(sol.iterations) <= 4:
-                cur_dp = min(cur_dp * 1.25, dp_max)
+                cur_dp = min(cur_dp * 1.25, dp_max_val)
             step += 1
         else:
             cur_dp *= 0.5
-            if cur_dp < dp_min:
+            if cur_dp < dp_min_val:
                 if verbose:
-                    print(f"Step {step + 1}: step size {cur_dp} < dp_min ({dp_min}). Terminating.")
+                    print(
+                        f"Step {step + 1}: step size {cur_dp} < dp_min ({dp_min_val}). Terminating."
+                    )
                 break
 
     return results

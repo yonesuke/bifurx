@@ -11,6 +11,7 @@ from bifurx.bifurcations.test_funcs import (
     evaluate_point_diagnostics,
     refine_bifurcation_point,
 )
+from bifurx.options import ContinuationOptions
 from bifurx.problem import BifurcationProblem
 from bifurx.solvers.bordered import solve_bordered_system
 from bifurx.solvers.newton import bordered_newton_solve
@@ -119,18 +120,20 @@ def continuation_scan(
     problem: BifurcationProblem,
     u0: ArrayLike | list[float] | Any | None = None,
     p0: float | jax.Array | None = None,
-    direction: float | jax.Array = 1.0,
+    direction: float | jax.Array | None = None,
     initial_tangent: jax.Array | None = None,
-    ds: float | jax.Array = 0.05,
-    ds_min: float | jax.Array = 1e-6,
-    ds_max: float | jax.Array = 0.5,
-    n_steps: int = 100,
-    newton_tol: float = 1e-8,
-    newton_step_tol: float = 1e-8,
-    newton_max_iters: int = 15,
+    ds: float | jax.Array | None = None,
+    ds_min: float | jax.Array | None = None,
+    ds_max: float | jax.Array | None = None,
+    n_steps: int | None = None,
+    newton_tol: float | None = None,
+    newton_step_tol: float | None = None,
+    newton_max_iters: int | None = None,
     param_bounds: tuple[float, float] | jax.Array | None = None,
-    adaptive_step: bool = False,
-    solver_method: str = "auto",
+    adaptive_step: bool | None = None,
+    solver_method: str | None = None,
+    options: ContinuationOptions | None = None,
+    max_steps: int | None = None,
 ) -> ContinuationScanResult:
     """End-to-end JIT pseudo-arclength continuation using `jax.lax.scan`.
 
@@ -149,48 +152,91 @@ def continuation_scan(
         Starting state vector (defaults to problem.u0).
     p0 : float | jax.Array | None, optional
         Starting parameter value (defaults to problem.p0).
-    direction : float | jax.Array, default=1.0
-        Direction of continuation (+1.0 or -1.0).
+    direction : float | jax.Array | None, optional
+        Direction of continuation (+1.0 or -1.0). Defaults to options.direction.
     initial_tangent : jax.Array | None, optional
         Custom initial tangent vector.
-    ds : float | jax.Array, default=0.05
-        Initial arclength step size.
-    ds_min : float | jax.Array, default=1e-6
-        Minimum step size.
-    ds_max : float | jax.Array, default=0.5
-        Maximum step size.
-    n_steps : int, default=100
-        Number of continuation steps.
-    newton_tol : float, default=1e-8
+    ds : float | jax.Array | None, optional
+        Initial arclength step size. Defaults to options.ds.
+    ds_min : float | jax.Array | None, optional
+        Minimum step size. Defaults to options.ds_min.
+    ds_max : float | jax.Array | None, optional
+        Maximum step size. Defaults to options.ds_max.
+    n_steps : int | None, optional
+        Number of continuation steps. Defaults to options.max_steps.
+    newton_tol : float | None, optional
         Residual norm convergence tolerance for Newton corrector.
-    newton_step_tol : float, default=1e-8
+    newton_step_tol : float | None, optional
         Step size convergence tolerance for Newton corrector.
-    newton_max_iters : int, default=15
+    newton_max_iters : int | None, optional
         Maximum Newton iterations per step.
     param_bounds : tuple[float, float] | jax.Array | None, optional
         Bounds (p_min, p_max) to terminate active continuation.
         Overrides `problem.param_bounds` if provided.
-    adaptive_step : bool, default=False
-        Whether to adjust step size dynamically.
-    solver_method : str, default="auto"
-        Linear solver method for bordered systems.
+    adaptive_step : bool | None, optional
+        Whether to adjust step size dynamically. Defaults to options.adaptive_step.
+    solver_method : str | None, optional
+        Linear solver method for bordered systems. Defaults to options.newton.solver_method.
+    options : ContinuationOptions | None, optional
+        Continuation options configuration. Overridden by explicit kwargs.
+    max_steps : int | None, optional
+        Alias for n_steps.
 
     Returns
     -------
     ContinuationScanResult
         Stacked arrays: (u, p, tangents, test_funcs, converged, step_sizes, iterations, stability).
     """
+    base_opts = ContinuationOptions() if options is None else options
+
+    # Newton options
+    newton_kwargs: dict[str, Any] = {}
+    if newton_tol is not None:
+        newton_kwargs["tol"] = newton_tol
+    if newton_step_tol is not None:
+        newton_kwargs["step_tol"] = newton_step_tol
+    if newton_max_iters is not None:
+        newton_kwargs["max_iters"] = newton_max_iters
+    if solver_method is not None:
+        newton_kwargs["solver_method"] = solver_method
+
+    resolved_newton = (
+        base_opts.newton.replace(**newton_kwargs) if newton_kwargs else base_opts.newton
+    )
+
+    steps = max_steps if max_steps is not None else n_steps
+    cont_kwargs: dict[str, Any] = {}
+    if ds is not None:
+        cont_kwargs["ds"] = ds
+    if ds_min is not None:
+        cont_kwargs["ds_min"] = ds_min
+    if ds_max is not None:
+        cont_kwargs["ds_max"] = ds_max
+    if steps is not None:
+        cont_kwargs["max_steps"] = steps
+    if direction is not None:
+        cont_kwargs["direction"] = direction
+    if adaptive_step is not None:
+        cont_kwargs["adaptive_step"] = adaptive_step
+
+    opts = base_opts.replace(newton=resolved_newton, **cont_kwargs)
+
     n = problem.dim
     u_cur = problem.u0 if u0 is None else jnp.asarray(u0, dtype=jnp.float64)
     p_cur = jnp.squeeze(jnp.asarray(problem.p0 if p0 is None else p0, dtype=jnp.float64))
-    ds_cur = jnp.asarray(ds, dtype=jnp.float64)
+    ds_cur = jnp.asarray(opts.ds, dtype=jnp.float64)
+    ds_min_val = jnp.asarray(opts.ds_min, dtype=jnp.float64)
+    ds_max_val = jnp.asarray(opts.ds_max, dtype=jnp.float64)
+    adaptive_step_val = bool(opts.adaptive_step)
+    n_steps_val = int(opts.max_steps)
+    newton_opts = opts.newton
 
     if initial_tangent is not None:
         tau_cur = jnp.asarray(initial_tangent, dtype=jnp.float64)
         tau_norm = jnp.linalg.norm(tau_cur)
         tau_cur = jnp.where(tau_norm > 1e-12, tau_cur / tau_norm, tau_cur)
     else:
-        tau_cur = compute_initial_tangent(problem, u_cur, p_cur, direction=direction)
+        tau_cur = compute_initial_tangent(problem, u_cur, p_cur, direction=opts.direction)
 
     p_min, p_max = _resolve_param_bounds(problem, param_bounds)
 
@@ -212,10 +258,11 @@ def continuation_scan(
             p_prev=p,
             tau_prev=tau,
             ds=cur_ds,
-            tol=newton_tol,
-            step_tol=newton_step_tol,
-            max_iters=newton_max_iters,
-            solver_method=solver_method,
+            tol=newton_opts.tol,
+            step_tol=newton_opts.step_tol,
+            max_iters=newton_opts.max_iters,
+            solver_method=newton_opts.solver_method,
+            options=newton_opts,
         )
 
         u_cand = res.u
@@ -232,7 +279,7 @@ def continuation_scan(
             d=tau[-1],
             f=jnp.zeros(n, dtype=jnp.float64),
             g=1.0,
-            method=solver_method,
+            method=newton_opts.solver_method,
         )
         tau_cand = sol_tau.z
         tau_cand_norm = jnp.linalg.norm(tau_cand)
@@ -251,9 +298,9 @@ def continuation_scan(
         is_active_next = jnp.where(converged_step, in_bounds, is_active)
 
         # 5. Step size adjustment
-        if adaptive_step:
-            ds_inc = jnp.minimum(cur_ds * 1.5, ds_max)
-            ds_dec = jnp.maximum(cur_ds * 0.5, ds_min)
+        if adaptive_step_val:
+            ds_inc = jnp.minimum(cur_ds * 1.5, ds_max_val)
+            ds_dec = jnp.maximum(cur_ds * 0.5, ds_min_val)
             ds_next = jnp.where(
                 res.converged,
                 jnp.where(
@@ -277,7 +324,7 @@ def continuation_scan(
         )
         return carry_next, output_step
 
-    _, outputs = jax.lax.scan(step_fn, init_carry, None, length=n_steps)
+    _, outputs = jax.lax.scan(step_fn, init_carry, None, length=n_steps_val)
     u_traj, p_traj, tau_traj, tf_traj, conv_traj, ds_traj, it_traj, st_traj = outputs
 
     return ContinuationScanResult(
@@ -296,19 +343,21 @@ def continuation(
     problem: BifurcationProblem,
     u0: ArrayLike | list[float] | Any | None = None,
     p0: float | jax.Array | None = None,
-    direction: float = 1.0,
+    direction: float | None = None,
     initial_tangent: jax.Array | None = None,
-    ds: float = 0.05,
-    ds_min: float = 1e-6,
-    ds_max: float = 0.5,
-    max_steps: int = 100,
-    newton_tol: float = 1e-8,
-    newton_max_iters: int = 15,
-    detect_bifurcations: bool = True,
+    ds: float | None = None,
+    ds_min: float | None = None,
+    ds_max: float | None = None,
+    max_steps: int | None = None,
+    newton_tol: float | None = None,
+    newton_max_iters: int | None = None,
+    detect_bifurcations: bool | None = None,
     param_bounds: tuple[float, float] | None = None,
-    adaptive_step: bool = True,
+    adaptive_step: bool | None = None,
     branch_name: str = "Branch",
     verbose: bool = False,
+    options: ContinuationOptions | None = None,
+    **kwargs: Any,
 ) -> ContinuationResult:
     """Keller pseudo-arclength continuation loop.
 
@@ -316,6 +365,52 @@ def continuation(
     the pure-JAX ``continuation_scan`` kernel (``jax.lax.scan``); this function
     retains converged steps and pinpoints LP/BP/HB bifurcations by refinement.
     """
+    if options is not None:
+        base_opts = options
+        cur_adaptive = base_opts.adaptive_step if adaptive_step is None else adaptive_step
+    else:
+        # Full backwards compatibility: legacy continuation defaulted to adaptive_step=True
+        cur_adaptive = True if adaptive_step is None else adaptive_step
+        base_opts = ContinuationOptions(adaptive_step=cur_adaptive)
+
+    # Newton options
+    newton_kwargs: dict[str, Any] = {}
+    if newton_tol is not None:
+        newton_kwargs["tol"] = newton_tol
+    elif "tol" in kwargs:
+        newton_kwargs["tol"] = kwargs["tol"]
+    if "newton_step_tol" in kwargs:
+        newton_kwargs["step_tol"] = kwargs["newton_step_tol"]
+    elif "step_tol" in kwargs:
+        newton_kwargs["step_tol"] = kwargs["step_tol"]
+    if newton_max_iters is not None:
+        newton_kwargs["max_iters"] = newton_max_iters
+    elif "max_iters" in kwargs:
+        newton_kwargs["max_iters"] = kwargs["max_iters"]
+    if "solver_method" in kwargs:
+        newton_kwargs["solver_method"] = kwargs["solver_method"]
+
+    resolved_newton = (
+        base_opts.newton.replace(**newton_kwargs) if newton_kwargs else base_opts.newton
+    )
+
+    steps = max_steps if max_steps is not None else kwargs.get("n_steps")
+    cont_kwargs: dict[str, Any] = {"adaptive_step": cur_adaptive}
+    if ds is not None:
+        cont_kwargs["ds"] = ds
+    if ds_min is not None:
+        cont_kwargs["ds_min"] = ds_min
+    if ds_max is not None:
+        cont_kwargs["ds_max"] = ds_max
+    if steps is not None:
+        cont_kwargs["max_steps"] = steps
+    if direction is not None:
+        cont_kwargs["direction"] = direction
+    if detect_bifurcations is not None:
+        cont_kwargs["detect_bifurcations"] = detect_bifurcations
+
+    opts = base_opts.replace(newton=resolved_newton, **cont_kwargs)
+
     u_cur = problem.u0 if u0 is None else jnp.asarray(u0, dtype=jnp.float64)
     p_cur = jnp.squeeze(jnp.asarray(problem.p0 if p0 is None else p0, dtype=jnp.float64))
 
@@ -327,23 +422,17 @@ def continuation(
         tau_norm = jnp.linalg.norm(tau_init)
         tau_init = jnp.where(tau_norm > 1e-12, tau_init / tau_norm, tau_init)
     else:
-        tau_init = compute_initial_tangent(problem, u_cur, p_cur, direction=direction)
+        tau_init = compute_initial_tangent(problem, u_cur, p_cur, direction=opts.direction)
 
     # 1. Pure-JAX `lax.scan` continuation kernel
     scan_res = continuation_scan(
         problem=problem,
         u0=u_cur,
         p0=p_cur,
-        direction=direction,
+        direction=opts.direction,
         initial_tangent=tau_init,
-        ds=ds,
-        ds_min=ds_min,
-        ds_max=ds_max,
-        n_steps=max_steps,
-        newton_tol=newton_tol,
-        newton_max_iters=newton_max_iters,
         param_bounds=param_bounds,
-        adaptive_step=adaptive_step,
+        options=opts,
     )
 
     # 2. Assemble the full trajectory including the starting point
@@ -355,7 +444,7 @@ def continuation(
     u_full = jnp.concatenate([u_cur[None, :], scan_res.u], axis=0)[keep]
     p_full = jnp.concatenate([jnp.atleast_1d(p_cur), scan_res.p], axis=0)[keep]
     tau_full = jnp.concatenate([tau_init[None, :], scan_res.tangents], axis=0)[keep]
-    ds_full = jnp.concatenate([jnp.atleast_1d(ds), scan_res.step_sizes], axis=0)[keep]
+    ds_full = jnp.concatenate([jnp.atleast_1d(opts.ds), scan_res.step_sizes], axis=0)[keep]
     it_full = jnp.concatenate([jnp.array([0], dtype=jnp.int32), scan_res.iterations], axis=0)[keep]
     st_full = jnp.concatenate([jnp.atleast_1d(st_init), scan_res.stability], axis=0)[keep]
 
@@ -374,7 +463,7 @@ def continuation(
 
     # 3. Vectorized sign-change detection & pure-JAX refinement
     bif_points: list[BifurcationPoint] = []
-    if detect_bifurcations and int(p_full.shape[0]) >= 2:
+    if opts.detect_bifurcations and int(p_full.shape[0]) >= 2:
         lp_cross = (tf_lp_full[:-1] * tf_lp_full[1:]) < 0.0
         hb_valid = (~jnp.isnan(tf_hb_full[:-1])) & (~jnp.isnan(tf_hb_full[1:]))
         hb_cross = (~lp_cross) & hb_valid & ((tf_hb_full[:-1] * tf_hb_full[1:]) < 0.0)

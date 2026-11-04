@@ -52,6 +52,11 @@ from bifurx.continuation.arclength import (
     continuation,
     continuation_scan,
 )
+from bifurx.options import (
+    CollocationOptions,
+    ContinuationOptions,
+    NewtonOptions,
+)
 from bifurx.prc.adjoint import (
     IPRCContinuationResult,
     IPRCResult,
@@ -79,11 +84,14 @@ __all__ = [
     "BifurcationProblem",
     "BorderedSolution",
     "Codim2Result",
+    "CollocationOptions",
     "CollocationProblem",
+    "ContinuationOptions",
     "ContinuationResult",
     "ContinuationScanResult",
     "IPRCContinuationResult",
     "IPRCResult",
+    "NewtonOptions",
     "NewtonResult",
     "PeriodicOrbitResult",
     "bialternate_matrix",

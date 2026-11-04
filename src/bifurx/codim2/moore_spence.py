@@ -12,6 +12,7 @@ from bifurx.bifurcations.test_funcs import (
     moore_spence_fold_residual,
 )
 from bifurx.continuation.arclength import compute_initial_tangent, continuation_scan
+from bifurx.options import ContinuationOptions
 from bifurx.problem import BifurcationProblem
 
 
@@ -36,16 +37,18 @@ def continuation_codim2(
     u_init: ArrayLike,
     p1_init: float | jax.Array,
     p2_init: float | jax.Array,
-    ds: float = 0.02,
-    ds_min: float = 1e-4,
-    ds_max: float = 0.1,
-    max_steps: int = 120,
-    direction: float = 1.0,
+    options: ContinuationOptions | None = None,
+    ds: float | None = None,
+    ds_min: float | None = None,
+    ds_max: float | None = None,
+    max_steps: int | None = None,
+    direction: float | None = None,
     param_orient_index: int = 1,  # 0 for orienting along p1, 1 for p2
     p1_bounds: tuple[float, float] | None = None,
     p2_bounds: tuple[float, float] | None = None,
-    tol: float = 1e-8,
-    max_newton_iters: int = 15,
+    tol: float | None = None,
+    max_newton_iters: int | None = None,
+    adaptive_step: bool | None = None,
     **kwargs: Any,
 ) -> Codim2Result:
     """Track a Codimension-2 bifurcation curve (Fold LP or Hopf HB) in two parameters (p1, p2).
@@ -53,6 +56,56 @@ def continuation_codim2(
     Formulates the Moore-Spence / Hopf augmented system as a ``BifurcationProblem`` and
     executes the trajectory via the shared pure-JAX ``continuation_scan`` kernel.
     """
+    if options is not None:
+        base_opts = options
+        cur_adaptive = base_opts.adaptive_step if adaptive_step is None else adaptive_step
+        def_ds = base_opts.ds
+        def_ds_min = base_opts.ds_min
+        def_ds_max = base_opts.ds_max
+        def_max_steps = base_opts.max_steps
+    else:
+        # Full backwards compatibility: legacy codim2 defaults
+        cur_adaptive = True if adaptive_step is None else adaptive_step
+        def_ds = 0.02
+        def_ds_min = 1e-4
+        def_ds_max = 0.1
+        def_max_steps = 120
+        base_opts = ContinuationOptions(
+            ds=def_ds,
+            ds_min=def_ds_min,
+            ds_max=def_ds_max,
+            max_steps=def_max_steps,
+            adaptive_step=cur_adaptive,
+        )
+
+    # Newton options
+    newton_kwargs: dict[str, Any] = {}
+    if tol is not None:
+        newton_kwargs["tol"] = tol
+    if max_newton_iters is not None:
+        newton_kwargs["max_iters"] = max_newton_iters
+    if "newton_step_tol" in kwargs:
+        newton_kwargs["step_tol"] = kwargs.pop("newton_step_tol")
+    if "solver_method" in kwargs:
+        newton_kwargs["solver_method"] = kwargs.pop("solver_method")
+
+    resolved_newton = (
+        base_opts.newton.replace(**newton_kwargs) if newton_kwargs else base_opts.newton
+    )
+
+    # Continuation options
+    steps = max_steps if max_steps is not None else kwargs.pop("n_steps", def_max_steps)
+    cont_kwargs: dict[str, Any] = {
+        "adaptive_step": cur_adaptive,
+        "ds": def_ds if ds is None else ds,
+        "ds_min": def_ds_min if ds_min is None else ds_min,
+        "ds_max": def_ds_max if ds_max is None else ds_max,
+        "max_steps": steps,
+    }
+    if direction is not None:
+        cont_kwargs["direction"] = direction
+
+    opts = base_opts.replace(newton=resolved_newton, **cont_kwargs)
     bif_type_upper = bif_type.upper()
     u0 = jnp.asarray(u_init, dtype=jnp.float64).ravel()
     p1_0 = jnp.squeeze(jnp.asarray(p1_init, dtype=jnp.float64))
@@ -145,21 +198,15 @@ def continuation_codim2(
         param_bounds=active_bounds,
     )
 
-    tau0 = compute_initial_tangent(prob, u_state0, p_cont0, direction=direction)
+    tau0 = compute_initial_tangent(prob, u_state0, p_cont0, direction=opts.direction)
     scan_res = continuation_scan(
         problem=prob,
         u0=u_state0,
         p0=p_cont0,
-        direction=direction,
+        direction=opts.direction,
         initial_tangent=tau0,
-        ds=ds,
-        ds_min=ds_min,
-        ds_max=ds_max,
-        n_steps=max_steps,
-        newton_tol=tol,
-        newton_max_iters=max_newton_iters,
         param_bounds=active_bounds,
-        adaptive_step=True,
+        options=opts,
     )
 
     keep = jnp.concatenate([jnp.array([True]), scan_res.converged], axis=0)
