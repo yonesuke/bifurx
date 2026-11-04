@@ -372,10 +372,12 @@ def continuation(
     bif_points: list[BifurcationPoint] = []
     if detect_bifurcations and int(p_full.shape[0]) >= 2:
         lp_cross = (tf_lp_full[:-1] * tf_lp_full[1:]) < 0.0
+        bp_valid = (~jnp.isnan(tf_bp_full[:-1])) & (~jnp.isnan(tf_bp_full[1:]))
         bp_span = jnp.maximum(jnp.abs(tf_bp_full[:-1]), jnp.abs(tf_bp_full[1:]))
         bp_diff = jnp.abs(tf_bp_full[1:] - tf_bp_full[:-1])
         bp_cross = (
             (~lp_cross)
+            & bp_valid
             & ((tf_bp_full[:-1] * tf_bp_full[1:]) < 0.0)
             & (bp_span > 1e-6)
             & (bp_diff > 1e-6)
@@ -417,7 +419,18 @@ def continuation(
                     details["refinement_failed"] = True
                     details["residual_norm"] = res_norm
                 if bif_type == "BP":
-                    details["Ju"] = problem.jacobian_u(u_full[s_idx], p_full[s_idx])
+                    Ju_ref = problem.jacobian_u(u_ref, p_ref)
+                    eigs_ref = jnp.linalg.eigvals(Ju_ref)
+                    min_eig_mag = float(jnp.min(jnp.abs(eigs_ref)))
+                    if min_eig_mag > 1e-3:
+                        if verbose:
+                            print(
+                                f"  >>> [{label}] at step {s_idx}: dropped spurious BP "
+                                f"(min|eig|={min_eig_mag:.4e} > 1e-3)"
+                            )
+                        continue
+                    details["Ju"] = Ju_ref
+                    details["min_eig"] = min_eig_mag
                 bif_points.append(
                     BifurcationPoint(
                         bif_type=bif_type,

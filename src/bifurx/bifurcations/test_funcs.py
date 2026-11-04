@@ -17,10 +17,11 @@ def test_func_fold(tangent: jax.Array) -> jax.Array:
 def test_func_branch_point(Ju: jax.Array, eigs: jax.Array | None = None) -> jax.Array:
     """Branch point test function: tracks the real eigenvalue closest to 0 (with sign).
 
-    If no purely real eigenvalue exists, falls back to the signed determinant.
+    Returns NaN if no purely real eigenvalue exists (|Im(lambda)| < 1e-4),
+    preventing spurious jumps when real eigenvalue pairs complexify (#16).
     This reliably detects simple and even-multiplicity zero eigenvalue crossings
     (such as degenerate transcritical bifurcations) without misfiring on
-    numerical noise (#2, #13).
+    numerical noise (#2, #13, #16).
     """
     eigvals = jnp.linalg.eigvals(Ju) if eigs is None else eigs
     real_mask = jnp.abs(jnp.imag(eigvals)) < 1e-4
@@ -29,11 +30,7 @@ def test_func_branch_point(Ju: jax.Array, eigs: jax.Array | None = None) -> jax.
     idx = jnp.argmin(magnitudes)
     closest_real = real_parts[idx]
 
-    sign, logdet = jnp.linalg.slogdet(Ju)
-    clipped_log = jnp.clip(logdet, -80.0, 80.0)
-    det_val = sign * jnp.exp(clipped_log)
-
-    return jnp.where(jnp.any(real_mask), closest_real, det_val)
+    return jnp.where(jnp.any(real_mask), closest_real, jnp.nan)
 
 
 def bialternate_matrix(A: jax.Array) -> jax.Array:

@@ -292,3 +292,54 @@ def test_persistently_singular_jacobian_no_spurious_bp():
     # Should NOT have any spurious BPs
     bps = res.get_bifurcations("BP")
     assert len(bps) == 0, f"Expected 0 BPs on persistently singular branch, got {len(bps)}"
+
+
+def test_branch_point_no_spurious_discontinuity_jumps():
+    """Test that eigenvalue swaps and real-to-complex transitions do not produce spurious BPs (#16)."""
+    # Mechanism 1: Equal-magnitude opposite-sign real eigenvalues swap (det = -1 constant)
+    s, p0_val = 1.0, 1.0
+
+    def a_mat(p):
+        return jnp.array([[(p0_val - p) / 2.0 + s, 0.0], [0.0, (p0_val - p) / 2.0 - s]])
+
+    prob1 = BifurcationProblem(
+        fn=lambda u, p: a_mat(p) @ u,
+        u0=[0.0, 0.0],
+        p0=0.0,
+        jac_u=lambda u, p: a_mat(p),
+    )
+    res1 = continuation(
+        prob1,
+        u0=jnp.zeros(2),
+        p0=0.0,
+        direction=1.0,
+        ds=0.1,
+        max_steps=40,
+        param_bounds=(0.0, 2.0),
+        adaptive_step=False,
+    )
+    bps1 = res1.get_bifurcations("BP")
+    assert len(bps1) == 0, f"Expected 0 BPs for constant det=-1 system, got {bps1}"
+
+    # Mechanism 2: Real eigenvalues complexify (Re = -1/2 for p > 0.25, no zero eigenvalue)
+    def f_complexify(u, p):
+        return jnp.array([u[1], -p * u[0] - u[1]])
+
+    prob2 = BifurcationProblem(
+        fn=f_complexify,
+        u0=[0.0, 0.0],
+        p0=0.0,
+        jac_u=lambda u, p: jnp.array([[0.0, 1.0], [-p, -1.0]]),
+    )
+    res2 = continuation(
+        prob2,
+        u0=jnp.zeros(2),
+        p0=0.0,
+        direction=1.0,
+        ds=0.05,
+        max_steps=40,
+        param_bounds=(0.0, 1.0),
+        adaptive_step=False,
+    )
+    bps2 = res2.get_bifurcations("BP")
+    assert len(bps2) == 0, f"Expected 0 BPs during complexification, got {bps2}"
