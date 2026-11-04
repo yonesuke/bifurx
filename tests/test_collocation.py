@@ -140,3 +140,39 @@ def test_collocation_non_trivial_and_degenerate_hopf():
     prob_deg = CollocationProblem(f_double_hopf, dim=4, num_intervals=10, num_gauss_points=2)
     with pytest.warns(UserWarning, match="Degenerate Hopf point detected"):
         initialize_from_hopf(prob_deg, u_hopf=jnp.zeros(4), p_hopf=0.0, eps=0.01)
+
+
+def test_continue_periodic_orbit_natural_mode():
+    """Test natural parameter continuation of periodic orbits (#15)."""
+    from bifurx.bvp import continue_periodic_orbit
+
+    N = 20
+    m = 3
+    prob = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=m)
+
+    t_grid = jnp.linspace(0, 2 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
+    sol0 = solve_periodic_orbit(prob, u_init, T_init=2 * jnp.pi, p=0.2, tol=1e-7)
+    assert bool(sol0.converged)
+
+    # Continue from mu=0.2 to mu=0.35 with natural parameter stepping
+    branch = continue_periodic_orbit(
+        prob,
+        initial_orbit=sol0,
+        p_start=0.2,
+        p_end=0.35,
+        dp=0.05,
+        param_mode="natural",
+        tol=1e-7,
+        max_steps=10,
+    )
+
+    assert len(branch) >= 3, (
+        f"Expected at least 3 steps on periodic orbit branch, got {len(branch)}"
+    )
+    for sol in branch:
+        assert bool(sol.converged)
+        assert float(sol.amplitude) > 1.0, (
+            f"Expected limit cycle amplitude > 1.0, got {sol.amplitude}"
+        )
+        assert 6.2 < float(sol.T) < 6.5, f"Expected VdP period near 2*pi, got {sol.T}"

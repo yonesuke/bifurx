@@ -540,3 +540,114 @@ def solve_periodic_orbit(
         residual_norm=rn_fin,
         problem=problem,
     )
+
+
+def continue_periodic_orbit(
+    problem: CollocationProblem,
+    initial_orbit: PeriodicOrbitResult,
+    p_start: float | jax.Array,
+    p_end: float | jax.Array,
+    dp: float | jax.Array = 0.01,
+    dp_min: float = 1e-5,
+    dp_max: float = 0.1,
+    max_steps: int = 100,
+    param_mode: str = "natural",
+    param_weight: float | None = None,
+    non_trivial: bool = True,
+    tol: float = 1e-7,
+    max_iters: int = 25,
+    verbose: bool = False,
+) -> list[PeriodicOrbitResult]:
+    """Continue a family of periodic orbits along parameter p (#15).
+
+    Supports natural parameter stepping (``param_mode='natural'``) with adaptive step size
+    control, keeping parameter progression strictly monotone and avoiding tangent wiggles
+    inherent to high-dimensional collocation pseudo-arclength systems.
+
+    Parameters
+    ----------
+    problem : CollocationProblem
+        Collocation problem instance.
+    initial_orbit : PeriodicOrbitResult
+        A converged periodic orbit at p_start.
+    p_start : float | jax.Array
+        Starting parameter value.
+    p_end : float | jax.Array
+        Target end parameter value.
+    dp : float | jax.Array, default=0.01
+        Initial parameter step size.
+    dp_min : float, default=1e-5
+        Minimum allowed step size before terminating.
+    dp_max : float, default=0.1
+        Maximum allowed step size.
+    max_steps : int, default=100
+        Maximum continuation steps.
+    param_mode : str, default='natural'
+        Continuation mode: 'natural' for fixed-parameter stepping with adaptive reduction.
+    param_weight : float | None, optional
+        Scaling factor for parameter direction.
+    non_trivial : bool, default=True
+        Whether to enforce non-trivial periodic orbit constraint.
+    tol : float, default=1e-7
+        Convergence tolerance for collocation Newton solver.
+    max_iters : int, default=25
+        Maximum iterations per collocation solve.
+    verbose : bool, default=False
+        If True, print continuation step progress.
+
+    Returns
+    -------
+    list[PeriodicOrbitResult]
+        List of converged periodic orbit results along the parameter branch.
+    """
+    p_s = float(p_start)
+    p_e = float(p_end)
+    direction = 1.0 if p_e >= p_s else -1.0
+    cur_dp = float(abs(float(dp)))
+
+    results: list[PeriodicOrbitResult] = [initial_orbit]
+    current_orbit = initial_orbit
+    p_cur = p_s
+
+    step = 0
+    while step < max_steps and (direction * (p_e - p_cur) > 1e-9):
+        p_target = p_cur + direction * cur_dp
+        if direction > 0 and p_target > p_e:
+            p_target = p_e
+        elif direction < 0 and p_target < p_e:
+            p_target = p_e
+
+        sol = solve_periodic_orbit(
+            problem,
+            u_mesh_init=current_orbit.u_mesh,
+            T_init=current_orbit.period,
+            p=p_target,
+            mesh=current_orbit.mesh,
+            u_gauss_init=current_orbit.u_gauss,
+            u_ref_mesh=current_orbit.u_mesh,
+            u_ref_gauss=current_orbit.u_gauss,
+            tol=tol,
+            max_iters=max_iters,
+            non_trivial=non_trivial,
+        )
+
+        if bool(sol.converged):
+            p_cur = p_target
+            current_orbit = sol
+            results.append(sol)
+            if verbose:
+                print(
+                    f"Step {step + 1}: p={p_cur:.5f}, T={float(sol.T):.5f}, "
+                    f"amp={float(sol.amplitude):.5f}, iters={int(sol.iterations)}"
+                )
+            if int(sol.iterations) <= 4:
+                cur_dp = min(cur_dp * 1.25, dp_max)
+            step += 1
+        else:
+            cur_dp *= 0.5
+            if cur_dp < dp_min:
+                if verbose:
+                    print(f"Step {step + 1}: step size {cur_dp} < dp_min ({dp_min}). Terminating.")
+                break
+
+    return results
