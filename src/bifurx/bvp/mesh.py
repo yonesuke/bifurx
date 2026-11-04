@@ -120,6 +120,7 @@ def redistribute_mesh(
     u_gauss_new = sol.evaluate(t_gauss).reshape(N, m, n)
 
     if not re_solve:
+        p_val = sol.p if sol.p is not None else jnp.asarray(p, dtype=jnp.float64)
         return PeriodicOrbitResult(
             mesh=new_mesh,
             u_mesh=u_mesh_new,
@@ -129,6 +130,7 @@ def redistribute_mesh(
             iterations=jnp.int32(0),
             residual_norm=sol.residual_norm,
             problem=sol.problem,
+            p=p_val,
         )
 
     return solve_periodic_orbit(

@@ -154,6 +154,8 @@ def test_continue_periodic_orbit_natural_mode():
     u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
     sol0 = solve_periodic_orbit(prob, u_init, T_init=2 * jnp.pi, p=0.2, tol=1e-7)
     assert bool(sol0.converged)
+    assert sol0.p is not None, "PeriodicOrbitResult must have parameter field p (#17)"
+    assert float(sol0.p) == 0.2
 
     # Continue from mu=0.2 to mu=0.35 with natural parameter stepping
     branch = continue_periodic_orbit(
@@ -170,8 +172,14 @@ def test_continue_periodic_orbit_natural_mode():
     assert len(branch) >= 3, (
         f"Expected at least 3 steps on periodic orbit branch, got {len(branch)}"
     )
+    p_vals = [float(sol.p) for sol in branch if sol.p is not None]
+    assert len(p_vals) == len(branch)
+    assert p_vals[0] == 0.2
+    assert p_vals[-1] == 0.35
+    assert all(p2 > p1 for p1, p2 in zip(p_vals[:-1], p_vals[1:], strict=True))
     for sol in branch:
         assert bool(sol.converged)
+        assert sol.p is not None
         assert float(sol.amplitude) > 1.0, (
             f"Expected limit cycle amplitude > 1.0, got {sol.amplitude}"
         )

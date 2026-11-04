@@ -98,6 +98,7 @@ class PeriodicOrbitResult(NamedTuple):
     iterations: jax.Array
     residual_norm: jax.Array
     problem: CollocationProblem
+    p: jax.Array | None = None
 
     @property
     def T(self) -> jax.Array:
@@ -539,6 +540,7 @@ def solve_periodic_orbit(
         iterations=it_fin,
         residual_norm=rn_fin,
         problem=problem,
+        p=p_arr,
     )
 
 
@@ -604,6 +606,9 @@ def continue_periodic_orbit(
     p_e = float(p_end)
     direction = 1.0 if p_e >= p_s else -1.0
     cur_dp = float(abs(float(dp)))
+
+    if initial_orbit.p is None:
+        initial_orbit = initial_orbit._replace(p=jnp.asarray(p_s, dtype=jnp.float64))
 
     results: list[PeriodicOrbitResult] = [initial_orbit]
     current_orbit = initial_orbit
