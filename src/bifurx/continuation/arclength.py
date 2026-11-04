@@ -240,7 +240,7 @@ def continuation_scan(
         tau_cand = jnp.where(jnp.dot(tau_cand, tau) < 0, -tau_cand, tau_cand)
 
         # 4. Canonical test functions & stability from a single eigensolve
-        test_funcs, is_stable = evaluate_point_diagnostics(Ju_cand, tau_cand)
+        test_funcs, is_stable = evaluate_point_diagnostics(Ju_cand, tau_cand, Jp=Jp_cand)
 
         # Advance state if step converged and active
         u_next = jnp.where(converged_step, u_cand, u)
@@ -348,7 +348,8 @@ def continuation(
 
     # 2. Assemble the full trajectory including the starting point
     Ju_init = problem.jacobian_u(u_cur, p_cur)
-    tf_init, st_init = evaluate_point_diagnostics(Ju_init, tau_init)
+    Jp_init = problem.jacobian_p(u_cur, p_cur)
+    tf_init, st_init = evaluate_point_diagnostics(Ju_init, tau_init, Jp=Jp_init)
 
     keep = jnp.concatenate([jnp.array([True]), scan_res.converged], axis=0)
     u_full = jnp.concatenate([u_cur[None, :], scan_res.u], axis=0)[keep]
@@ -367,23 +368,25 @@ def continuation(
     tf_hb_full = jnp.concatenate(
         [jnp.atleast_1d(tf_init["HB"]), scan_res.test_funcs["HB"]], axis=0
     )[keep]
+    tf_st_idx_full = jnp.concatenate(
+        [jnp.atleast_1d(tf_init["st_idx"]), scan_res.test_funcs["st_idx"]], axis=0
+    )[keep]
 
     # 3. Vectorized sign-change detection & pure-JAX refinement
     bif_points: list[BifurcationPoint] = []
     if detect_bifurcations and int(p_full.shape[0]) >= 2:
         lp_cross = (tf_lp_full[:-1] * tf_lp_full[1:]) < 0.0
-        bp_valid = (~jnp.isnan(tf_bp_full[:-1])) & (~jnp.isnan(tf_bp_full[1:]))
-        bp_span = jnp.maximum(jnp.abs(tf_bp_full[:-1]), jnp.abs(tf_bp_full[1:]))
-        bp_diff = jnp.abs(tf_bp_full[1:] - tf_bp_full[:-1])
-        bp_cross = (
-            (~lp_cross)
-            & bp_valid
-            & ((tf_bp_full[:-1] * tf_bp_full[1:]) < 0.0)
-            & (bp_span > 1e-6)
-            & (bp_diff > 1e-6)
-        )
         hb_valid = (~jnp.isnan(tf_hb_full[:-1])) & (~jnp.isnan(tf_hb_full[1:]))
-        hb_cross = (~lp_cross) & (~bp_cross) & hb_valid & ((tf_hb_full[:-1] * tf_hb_full[1:]) < 0.0)
+        hb_cross = (~lp_cross) & hb_valid & ((tf_hb_full[:-1] * tf_hb_full[1:]) < 0.0)
+
+        # Branch point detection:
+        # 1. Canonical bordered determinant sign change (AUTO / MatCont standard):
+        bp_det_cross = (~lp_cross) & ((tf_bp_full[:-1] * tf_bp_full[1:]) < 0.0)
+        # 2. Even-multiplicity zero eigenvalue crossings on symmetric invariant manifolds (where Jp = 0):
+        # det(A_ext) = tau_p * det(Ju) >= 0 touches zero quadratically without sign change.
+        # Detected cleanly via instability index transition (st_idx) without fold or Hopf crossing:
+        st_cross = (~lp_cross) & (~hb_cross) & (tf_st_idx_full[:-1] != tf_st_idx_full[1:])
+        bp_cross = bp_det_cross | st_cross
 
         for bif_type, mask, label in (
             ("LP", lp_cross, "FOLD / LP"),
@@ -420,17 +423,8 @@ def continuation(
                     details["residual_norm"] = res_norm
                 if bif_type == "BP":
                     Ju_ref = problem.jacobian_u(u_ref, p_ref)
-                    eigs_ref = jnp.linalg.eigvals(Ju_ref)
-                    min_eig_mag = float(jnp.min(jnp.abs(eigs_ref)))
-                    if min_eig_mag > 1e-3:
-                        if verbose:
-                            print(
-                                f"  >>> [{label}] at step {s_idx}: dropped spurious BP "
-                                f"(min|eig|={min_eig_mag:.4e} > 1e-3)"
-                            )
-                        continue
                     details["Ju"] = Ju_ref
-                    details["min_eig"] = min_eig_mag
+                    details["min_eig"] = float(jnp.min(jnp.abs(jnp.linalg.eigvals(Ju_ref))))
                 bif_points.append(
                     BifurcationPoint(
                         bif_type=bif_type,

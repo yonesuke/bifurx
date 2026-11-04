@@ -21,6 +21,19 @@ class BorderedSolution(NamedTuple):
         return jnp.concatenate([self.x.ravel(), jnp.atleast_1d(self.y)])
 
 
+def build_bordered_matrix(
+    A: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    d: float | jax.Array,
+) -> jax.Array:
+    """Construct full (n+1) x (n+1) bordered matrix M = [[A, b], [c^T, d]]."""
+    b_col = b.reshape(-1, 1)
+    c_row = c.reshape(1, -1)
+    d_elem = jnp.atleast_2d(d)
+    return jnp.block([[A, b_col], [c_row, d_elem]])
+
+
 def _build_bordered_matrix(
     A: jax.Array,
     b: jax.Array,
@@ -30,10 +43,7 @@ def _build_bordered_matrix(
     g: float | jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     """Construct full (n+1) x (n+1) matrix M and RHS vector r."""
-    b_col = b.reshape(-1, 1)
-    c_row = c.reshape(1, -1)
-    d_elem = jnp.atleast_2d(d)
-    M = jnp.block([[A, b_col], [c_row, d_elem]])
+    M = build_bordered_matrix(A, b, c, d)
     r = jnp.concatenate([f.ravel(), jnp.atleast_1d(g)])
     return M, r
 

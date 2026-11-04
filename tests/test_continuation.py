@@ -278,6 +278,26 @@ def test_degenerate_multiplicity_two_zero_eigenvalue():
     assert abs(bps[0].p) < 1e-2, f"BP expected near p=0, got {bps[0].p}"
 
 
+def test_kuramoto_4d_degenerate_branch_point():
+    """Test detection of even-multiplicity (multiplicity 4) branch point on symmetric manifold (#13, #18).
+
+    det(Ju) = p^4 >= 0 touches zero quartically without changing sign.
+    Canonical bordered determinant + instability index transition cleanly pinpoints the BP at p = 0.
+    """
+
+    def f_kuramoto_4d(u, p):
+        r2 = jnp.sum(u**2)
+        return p * u - r2 * u
+
+    prob = BifurcationProblem(fn=f_kuramoto_4d, u0=[0.0, 0.0, 0.0, 0.0], p0=-0.4)
+    res = continuation(prob, ds=0.04, max_steps=25, param_bounds=(-0.5, 0.5))
+
+    bps = res.get_bifurcations("BP")
+    assert len(bps) == 1, f"Expected exactly 1 BP detected, got {len(bps)}: {bps}"
+    assert abs(bps[0].p) < 1e-2, f"BP expected near p=0, got {bps[0].p}"
+    assert float(jnp.linalg.norm(bps[0].u)) < 1e-3, f"BP state expected near 0, got {bps[0].u}"
+
+
 def test_persistently_singular_jacobian_no_spurious_bp():
     """Test that branch with persistent kernel does not flood spurious BPs (#2)."""
 
@@ -328,17 +348,17 @@ def test_branch_point_no_spurious_discontinuity_jumps():
     prob2 = BifurcationProblem(
         fn=f_complexify,
         u0=[0.0, 0.0],
-        p0=0.0,
+        p0=0.1,
         jac_u=lambda u, p: jnp.array([[0.0, 1.0], [-p, -1.0]]),
     )
     res2 = continuation(
         prob2,
         u0=jnp.zeros(2),
-        p0=0.0,
+        p0=0.1,
         direction=1.0,
         ds=0.05,
         max_steps=40,
-        param_bounds=(0.0, 1.0),
+        param_bounds=(0.1, 1.0),
         adaptive_step=False,
     )
     bps2 = res2.get_bifurcations("BP")

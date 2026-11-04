@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from bifurx.problem import BifurcationProblem
+from bifurx.solvers.bordered import build_bordered_matrix
 from bifurx.solvers.newton import bordered_newton_solve
 
 
@@ -14,23 +15,27 @@ def test_func_fold(tangent: jax.Array) -> jax.Array:
     return tangent[-1]
 
 
-def test_func_branch_point(Ju: jax.Array, eigs: jax.Array | None = None) -> jax.Array:
-    """Branch point test function: tracks the real eigenvalue closest to 0 (with sign).
+def test_func_branch_point(
+    Ju: jax.Array,
+    Jp: jax.Array | None = None,
+    tangent: jax.Array | None = None,
+) -> jax.Array:
+    """Branch point test function: determinant of the augmented continuation Jacobian (AUTO / MatCont standard).
 
-    Returns NaN if no purely real eigenvalue exists (|Im(lambda)| < 1e-4),
-    preventing spurious jumps when real eigenvalue pairs complexify (#16).
-    This reliably detects simple and even-multiplicity zero eigenvalue crossings
-    (such as degenerate transcritical bifurcations) without misfiring on
-    numerical noise (#2, #13, #16).
+    $$\\mathbf{A}_{\\text{ext}} = \\begin{pmatrix} J_u & J_p \\\\ \\tau_u^T & \\tau_p \\end{pmatrix}$$
+    $$\\psi_{\\text{BP}} = \\det(\\mathbf{A}_{\\text{ext}})$$
+
+    At regular equilibrium points and simple fold (limit) points, $\\mathbf{A}_{\\text{ext}}$
+    is nonsingular ($\\det \\neq 0$). At a simple branch point (BP), $\\mathbf{A}_{\\text{ext}}$ drops
+    rank and its determinant crosses zero with a sign change.
     """
-    eigvals = jnp.linalg.eigvals(Ju) if eigs is None else eigs
-    real_mask = jnp.abs(jnp.imag(eigvals)) < 1e-4
-    real_parts = jnp.real(eigvals)
-    magnitudes = jnp.where(real_mask, jnp.abs(real_parts), jnp.inf)
-    idx = jnp.argmin(magnitudes)
-    closest_real = real_parts[idx]
+    n = Ju.shape[0]
+    b = jnp.zeros(n, dtype=Ju.dtype) if Jp is None else jnp.reshape(Jp, (n,))
+    c = jnp.zeros(n, dtype=Ju.dtype) if tangent is None else jnp.reshape(tangent[:n], (n,))
+    d = jnp.array(1.0, dtype=Ju.dtype) if tangent is None else jnp.squeeze(tangent[-1])
 
-    return jnp.where(jnp.any(real_mask), closest_real, jnp.nan)
+    A_ext = build_bordered_matrix(Ju, b, c, d)
+    return jnp.linalg.det(A_ext)
 
 
 def bialternate_matrix(A: jax.Array) -> jax.Array:
@@ -72,15 +77,22 @@ def test_func_hopf(Ju: jax.Array, eigs: jax.Array | None = None) -> jax.Array:
 
 
 def evaluate_point_diagnostics(
-    Ju: jax.Array, tangent: jax.Array
+    Ju: jax.Array,
+    tangent: jax.Array,
+    Jp: jax.Array | None = None,
 ) -> tuple[dict[str, jax.Array], jax.Array]:
-    """Compute all codim-1 test functions (LP, BP, HB) and Hurwitz stability from a single eigensolve."""
+    """Compute all codim-1 test functions (LP, BP, HB), stability, and diagnostics in pure JAX."""
     eigs = jnp.linalg.eigvals(Ju)
-    is_stable = jnp.all(jnp.real(eigs) < 0.0)
+    real_parts = jnp.real(eigs)
+    is_stable = jnp.all(real_parts < 0.0)
+    st_idx = jnp.sum(real_parts > 0.0)
+    min_eig = jnp.min(jnp.abs(eigs))
     test_funcs = {
         "LP": test_func_fold(tangent),
-        "BP": test_func_branch_point(Ju, eigs=eigs),
+        "BP": test_func_branch_point(Ju, Jp=Jp, tangent=tangent),
         "HB": test_func_hopf(Ju, eigs=eigs),
+        "st_idx": st_idx,
+        "min_eig": min_eig,
     }
     return test_funcs, is_stable
 
@@ -133,6 +145,35 @@ def _bisect_root(
         go_left = jnp.isfinite(f_mid) & jnp.isfinite(f_lo) & ((f_lo * f_mid) <= 0.0)
         new_lo = jnp.where(go_left, lo_s, mid)
         new_hi = jnp.where(go_left, mid, hi_s)
+        return new_lo, new_hi, i_s + 1
+
+    lo_f, hi_f, _ = jax.lax.while_loop(cond, body, (lo, hi, jnp.int32(0)))
+    return 0.5 * (lo_f + hi_f)
+
+
+def _ternary_search_min(
+    f: Callable[[jax.Array], jax.Array],
+    lo: jax.Array,
+    hi: jax.Array,
+    tol: float = 1e-8,
+    max_iters: int = 60,
+) -> jax.Array:
+    """Find the minimizer of scalar function f on [lo, hi] by ternary search in pure JAX."""
+
+    def cond(state: tuple[jax.Array, jax.Array, jax.Array]) -> jax.Array:
+        lo_s, hi_s, i_s = state
+        return ((hi_s - lo_s) > tol) & (i_s < max_iters) & jnp.isfinite(lo_s) & jnp.isfinite(hi_s)
+
+    def body(
+        state: tuple[jax.Array, jax.Array, jax.Array],
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        lo_s, hi_s, i_s = state
+        span = hi_s - lo_s
+        m1 = lo_s + span / 3.0
+        m2 = hi_s - span / 3.0
+        go_left = f(m1) < f(m2)
+        new_hi = jnp.where(go_left, m2, hi_s)
+        new_lo = jnp.where(go_left, lo_s, m1)
         return new_lo, new_hi, i_s + 1
 
     lo_f, hi_f, _ = jax.lax.while_loop(cond, body, (lo, hi, jnp.int32(0)))
@@ -220,7 +261,11 @@ def refine_bifurcation_point(
         Ju_mid = problem.jacobian_u(u_mid, p_mid)
 
         if bif_type == "BP":
-            return test_func_branch_point(Ju_mid)
+            Jp_mid = problem.jacobian_p(u_mid, p_mid)
+            tau_mid = (1.0 - alpha) * tau_a_j + alpha * tau_b_j
+            tau_norm = jnp.linalg.norm(tau_mid)
+            tau_mid = jnp.where(tau_norm > 1e-12, tau_mid / tau_norm, tau_mid)
+            return test_func_branch_point(Ju_mid, Jp=Jp_mid, tangent=tau_mid)
         if bif_type == "HB":
             return test_func_hopf(Ju_mid)
         tau_mid = (1.0 - alpha) * tau_a_j + alpha * tau_b_j
@@ -233,10 +278,11 @@ def refine_bifurcation_point(
 
     has_bracket = jnp.isfinite(fa) & jnp.isfinite(fb) & ((fa * fb) <= 0.0)
     alpha_bisect = _bisect_root(test_val_at, alpha_lo, alpha_hi, tol=tol)
+    alpha_min = _ternary_search_min(lambda a: jnp.abs(test_val_at(a)), alpha_lo, alpha_hi, tol=tol)
     alpha_opt = jnp.where(
         has_bracket & jnp.isfinite(alpha_bisect),
         alpha_bisect,
-        jnp.array(0.5, dtype=jnp.float64),
+        jnp.where(jnp.isfinite(alpha_min), alpha_min, jnp.array(0.5, dtype=jnp.float64)),
     )
 
     u_mid = 0.5 * (u_a_j + u_b_j)
