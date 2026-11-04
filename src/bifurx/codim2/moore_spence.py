@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from bifurx.bifurcations.test_funcs import (
+    extract_leading_hopf_pair,
     initial_null_vector,
     moore_spence_fold_residual,
 )
@@ -140,10 +141,9 @@ def continuation_codim2(
         else:
             Ju0 = jac_u_fn(u0, p1_0, p2_0)
             eigs, vecs = jnp.linalg.eig(Ju0)
-            complex_mask = jnp.abs(jnp.imag(eigs)) > 1e-4 * (1.0 + jnp.abs(eigs))
-            real_abs = jnp.where(complex_mask, jnp.abs(jnp.real(eigs)), jnp.inf)
-            idx_hb = jnp.argmin(real_abs)
-            omega0 = jnp.abs(jnp.imag(eigs[idx_hb]))
+            _, leading_real, omega0 = extract_leading_hopf_pair(Ju0, eigs=eigs)
+            target_eig = leading_real + 1j * omega0
+            idx_hb = jnp.argmin(jnp.abs(eigs - target_eig))
             vec0 = vecs[:, idx_hb]
             v_r0 = jnp.real(vec0)
             v_i0 = jnp.imag(vec0)

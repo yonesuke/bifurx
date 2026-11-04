@@ -64,16 +64,38 @@ def bialternate_matrix(A: jax.Array) -> jax.Array:
     return diag_term + pr_term + qs_term + ps_term + qr_term
 
 
-def test_func_hopf(Ju: jax.Array, eigs: jax.Array | None = None) -> jax.Array:
+def extract_leading_hopf_pair(
+    Ju: jax.Array,
+    eigs: jax.Array | None = None,
+    rel_tol: float = 1e-4,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Extract leading complex-conjugate eigenvalue pair for Hopf bifurcation in pure JAX.
+
+    Returns: (has_hopf_pair, leading_real, leading_imag)
+    """
+    eigvals = jnp.linalg.eigvals(Ju) if eigs is None else eigs
+    complex_mask = jnp.abs(jnp.imag(eigvals)) > rel_tol * (1.0 + jnp.abs(eigvals))
+    has_hopf_pair = jnp.any(complex_mask)
+
+    masked_real = jnp.where(complex_mask, jnp.real(eigvals), -jnp.inf)
+    idx = jnp.argmax(masked_real)
+    leading_real = jnp.where(has_hopf_pair, jnp.real(eigvals[idx]), jnp.nan)
+    leading_imag = jnp.where(has_hopf_pair, jnp.abs(jnp.imag(eigvals[idx])), jnp.nan)
+    return has_hopf_pair, leading_real, leading_imag
+
+
+def test_func_hopf(
+    Ju: jax.Array,
+    eigs: jax.Array | None = None,
+    rel_tol: float = 1e-4,
+) -> jax.Array:
     """Hopf bifurcation test function.
 
     Returns the real part of the leading complex-conjugate eigenvalue pair with non-negligible
-    imaginary component (|Im| > 1e-4 * (1.0 + |lambda|)). Returns NaN if all eigenvalues are purely real.
+    imaginary component (|Im| > rel_tol * (1.0 + |lambda|)). Returns NaN if all eigenvalues are purely real.
     """
-    eigvals = jnp.linalg.eigvals(Ju) if eigs is None else eigs
-    complex_mask = jnp.abs(jnp.imag(eigvals)) > 1e-4 * (1.0 + jnp.abs(eigvals))
-    leading = jnp.max(jnp.where(complex_mask, jnp.real(eigvals), -jnp.inf))
-    return jnp.where(jnp.any(complex_mask), leading, jnp.nan)
+    has_hopf_pair, leading_real, _ = extract_leading_hopf_pair(Ju, eigs=eigs, rel_tol=rel_tol)
+    return jnp.where(has_hopf_pair, leading_real, jnp.nan)
 
 
 def evaluate_point_diagnostics(
@@ -184,6 +206,7 @@ def refine_fold_moore_spence(
     problem: BifurcationProblem,
     u_approx: jax.Array,
     p_approx: float | jax.Array,
+    v_init: jax.Array | None = None,
     tol: float = 1e-11,
     max_iters: int = 15,
 ) -> tuple[jax.Array, jax.Array]:
@@ -199,7 +222,14 @@ def refine_fold_moore_spence(
     u_0 = jnp.asarray(u_approx, dtype=jnp.float64).ravel()
     p_0 = jnp.squeeze(jnp.asarray(p_approx, dtype=jnp.float64))
     Ju0 = problem.jacobian_u(u_0, p_0)
-    v0, l_norm = initial_null_vector(Ju0)
+    if v_init is None:
+        v0, l_norm = initial_null_vector(Ju0)
+    else:
+        v_norm = jnp.linalg.norm(v_init)
+        v_cand = jnp.where(v_norm > 1e-30, v_init / v_norm, v_init)
+        v_svd, _ = initial_null_vector(Ju0)
+        v0 = jnp.where(v_norm > 1e-12, v_cand, v_svd)
+        l_norm = v0
 
     x0 = jnp.concatenate([u_0, jnp.atleast_1d(p_0), v0])
 
@@ -313,51 +343,14 @@ def refine_bifurcation_point(
     p_pol = jnp.where(pol_ok, res_pol.p, p_opt)
 
     if bif_type == "LP":
-        # Seed Moore-Spence from both endpoints (pre-turn u_a, post-turn u_b) and the polished point u_pol (#12)
-        u_fa, p_fa = refine_fold_moore_spence(problem, u_a_j, p_a_j, tol=tol)
-        u_fb, p_fb = refine_fold_moore_spence(problem, u_b_j, p_b_j, tol=tol)
-        u_fp, p_fp = refine_fold_moore_spence(problem, u_pol, p_pol, tol=tol)
-
-        ok_a = (
-            jnp.all(jnp.isfinite(u_fa))
-            & jnp.isfinite(p_fa)
-            & (jnp.linalg.norm(problem.residual(u_fa, p_fa)) < 1e-6)
+        # Seed Moore-Spence directly from (u_opt, p_opt, tau_opt) from tangent bisection (#21)
+        u_ms, p_ms = refine_fold_moore_spence(
+            problem, u_opt, p_opt, v_init=tau_opt[: problem.dim], tol=tol
         )
-        ok_b = (
-            jnp.all(jnp.isfinite(u_fb))
-            & jnp.isfinite(p_fb)
-            & (jnp.linalg.norm(problem.residual(u_fb, p_fb)) < 1e-6)
-        )
-        ok_p = (
-            jnp.all(jnp.isfinite(u_fp))
-            & jnp.isfinite(p_fp)
-            & (jnp.linalg.norm(problem.residual(u_fp, p_fp)) < 1e-6)
-        )
-
-        p_lo = jnp.minimum(p_a_j, p_b_j)
-        p_hi = jnp.maximum(p_a_j, p_b_j)
-        p_span = jnp.maximum(p_hi - p_lo, 1e-6)
-        u_span = jnp.maximum(jnp.linalg.norm(u_b_j - u_a_j), 1e-6)
-
-        def _candidate_score(u_c: jax.Array, p_c: jax.Array, ok_c: jax.Array) -> jax.Array:
-            p_excess = jnp.maximum(0.0, jnp.maximum(p_lo - p_c, p_c - p_hi))
-            p_pen = (p_excess / p_span) ** 2
-            dist = jnp.sum(((u_c - u_mid) / u_span) ** 2) + ((p_c - p_mid) / p_span) ** 2
-            return jnp.where(ok_c, dist + 100.0 * p_pen, 1e20)
-
-        score_a = _candidate_score(u_fa, p_fa, ok_a)
-        score_b = _candidate_score(u_fb, p_fb, ok_b)
-        score_p = _candidate_score(u_fp, p_fp, ok_p)
-
-        use_a = (score_a <= score_b) & (score_a <= score_p) & (score_a < 1e10)
-        use_b = (~use_a) & (score_b <= score_p) & (score_b < 1e10)
-        use_p = (~use_a) & (~use_b) & (score_p < 1e10)
-
-        u_ms = jnp.where(use_a, u_fa, jnp.where(use_b, u_fb, jnp.where(use_p, u_fp, u_pol)))
-        p_ms = jnp.where(use_a, p_fa, jnp.where(use_b, p_fb, jnp.where(use_p, p_fp, p_pol)))
-
-        u_res = u_ms
-        p_res = p_ms
+        res_ms = jnp.linalg.norm(problem.residual(u_ms, p_ms))
+        ms_ok = jnp.all(jnp.isfinite(u_ms)) & jnp.isfinite(p_ms) & (res_ms < 1e-6)
+        u_res = jnp.where(ms_ok, u_ms, u_opt)
+        p_res = jnp.where(ms_ok, p_ms, p_opt)
     else:
         u_res = u_pol
         p_res = p_pol

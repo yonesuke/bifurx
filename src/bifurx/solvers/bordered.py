@@ -141,7 +141,6 @@ def solve_bordered_system(
     BorderedSolution
         Named tuple (x, y) containing the solution components.
     """
-    n = A.shape[0]
     b_flat = b.ravel()
     c_flat = c.ravel()
     f_flat = f.ravel()
@@ -155,40 +154,29 @@ def solve_bordered_system(
         return solve_bordered_direct(A, b_flat, c_flat, d_scalar, f_flat, g_scalar, rcond=rcond)
 
     if method == "auto":
-        s = jnp.linalg.svdvals(A)
-        rcond_A = s[-1] / (s[0] + 1e-30)
-        is_A_good = rcond_A > rcond
+        rhs = jnp.stack([b_flat, f_flat], axis=-1)
+        sol_vw = jnp.linalg.solve(A, rhs)
+        v = sol_vw[:, 0]
+        w = sol_vw[:, 1]
+        delta = d_scalar - jnp.dot(c_flat, v)
+        is_valid = jnp.all(jnp.isfinite(sol_vw)) & (
+            jnp.abs(delta) > rcond * (1.0 + jnp.abs(d_scalar))
+        )
 
-        # Safe A to prevent NaNs in non-executed branch under autodiff/JIT
-        A_safe = jnp.where(is_A_good, A, jnp.eye(n, dtype=A.dtype))
+        delta_safe = jnp.where(is_valid, delta, 1.0)
+        v_safe = jnp.where(is_valid, v, 0.0)
+        w_safe = jnp.where(is_valid, w, 0.0)
 
         def _block_branch() -> tuple[jax.Array, jax.Array]:
-            rhs = jnp.stack([b_flat, f_flat], axis=-1)
-            sol_vw = jnp.linalg.solve(A_safe, rhs)
-            v = sol_vw[:, 0]
-            w = sol_vw[:, 1]
-            delta = d_scalar - jnp.dot(c_flat, v)
-            # Check if delta is non-zero
-            is_delta_good = jnp.abs(delta) > rcond
-
-            def _compute_block() -> tuple[jax.Array, jax.Array]:
-                y_val = (g_scalar - jnp.dot(c_flat, w)) / delta
-                x_val = w - y_val * v
-                return x_val, jnp.squeeze(y_val)
-
-            def _compute_fallback_direct() -> tuple[jax.Array, jax.Array]:
-                sol = solve_bordered_direct(
-                    A, b_flat, c_flat, d_scalar, f_flat, g_scalar, rcond=rcond
-                )
-                return sol.x, sol.y
-
-            return jax.lax.cond(is_delta_good, _compute_block, _compute_fallback_direct)
+            y_val = (g_scalar - jnp.dot(c_flat, w_safe)) / delta_safe
+            x_val = w_safe - y_val * v_safe
+            return x_val, jnp.squeeze(y_val)
 
         def _direct_branch() -> tuple[jax.Array, jax.Array]:
             sol = solve_bordered_direct(A, b_flat, c_flat, d_scalar, f_flat, g_scalar, rcond=rcond)
             return sol.x, sol.y
 
-        x_res, y_res = jax.lax.cond(is_A_good, _block_branch, _direct_branch)
+        x_res, y_res = jax.lax.cond(is_valid, _block_branch, _direct_branch)
         return BorderedSolution(x=x_res, y=y_res)
 
     msg = f"Unknown method: {method}. Choose from 'auto', 'block', or 'direct'."

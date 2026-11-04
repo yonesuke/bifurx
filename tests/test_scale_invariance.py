@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from bifurx.bifurcations.test_funcs import test_func_hopf as hopf_test_func
+from bifurx.bifurcations.test_funcs import (
+    extract_leading_hopf_pair,
+)
+from bifurx.bifurcations.test_funcs import (
+    test_func_hopf as hopf_test_func,
+)
 from bifurx.continuation.arclength import BifurcationPoint, continuation
 from bifurx.options import ContinuationOptions, NewtonOptions
 from bifurx.problem import BifurcationProblem
@@ -172,3 +177,30 @@ def test_hopf_test_function_scale_invariance():
     Ju_real = jnp.array([[2.0, 0.0], [0.0, -3.0]])
     hb_val_real = hopf_test_func(Ju_real)
     assert jnp.isnan(hb_val_real)
+
+
+def test_extract_leading_hopf_pair():
+    """Verify extract_leading_hopf_pair extracts the critical conjugate pair in pure JAX (#21)."""
+    # 1. Multiple complex conjugate pairs:
+    # Pair A: -3.0 +/- 2.0i
+    # Pair B (leading): 0.5 +/- 5.0i
+    eigs = jnp.array([-3.0 + 2.0j, -3.0 - 2.0j, 0.5 + 5.0j, 0.5 - 5.0j, -1.0])
+    dummy_Ju = jnp.eye(5)
+    has_pair, lead_r, lead_i = extract_leading_hopf_pair(dummy_Ju, eigs=eigs)
+    assert bool(has_pair)
+    assert abs(float(lead_r) - 0.5) < 1e-12
+    assert abs(float(lead_i) - 5.0) < 1e-12
+
+    # 2. Pure real eigenvalues
+    eigs_real = jnp.array([1.0, -2.0, 3.5])
+    has_pair_r, lead_r_r, lead_i_r = extract_leading_hopf_pair(dummy_Ju, eigs=eigs_real)
+    assert not bool(has_pair_r)
+    assert jnp.isnan(lead_r_r)
+    assert jnp.isnan(lead_i_r)
+
+    # 3. Direct from Jacobian
+    Ju = jnp.array([[0.2, -3.0], [3.0, 0.2]])
+    has_pair_j, lead_r_j, lead_i_j = extract_leading_hopf_pair(Ju)
+    assert bool(has_pair_j)
+    assert abs(float(lead_r_j) - 0.2) < 1e-10
+    assert abs(float(lead_i_j) - 3.0) < 1e-10

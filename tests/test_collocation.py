@@ -184,3 +184,23 @@ def test_continue_periodic_orbit_natural_mode():
             f"Expected limit cycle amplitude > 1.0, got {sol.amplitude}"
         )
         assert 6.2 < float(sol.T) < 6.5, f"Expected VdP period near 2*pi, got {sol.T}"
+
+
+def test_initialize_from_hopf_detuning():
+    """Verify direction- and step-scaled detuning in initialize_from_hopf (#21)."""
+    prob = CollocationProblem(f_ab, dim=2, num_intervals=10, num_gauss_points=2)
+    u_hopf = jnp.array([0.8950809, 4.1770443])
+    p_hopf = 0.1309003
+
+    # 1. Custom direction and step size ds
+    _, _, _, T0, p_init_custom = initialize_from_hopf(
+        prob, u_hopf, p_hopf, eps=0.05, direction=1.0, ds=0.003
+    )
+    assert abs(float(p_init_custom) - (p_hopf + 0.003)) < 1e-12
+    assert float(T0) > 0.0
+
+    # 2. Default direction=-1.0 with ds=None (scaled by eps)
+    _, _, _, _, p_init_eps = initialize_from_hopf(
+        prob, u_hopf, p_hopf, eps=0.05, direction=-1.0, ds=None
+    )
+    assert abs(float(p_init_eps) - (p_hopf - 0.05)) < 1e-12

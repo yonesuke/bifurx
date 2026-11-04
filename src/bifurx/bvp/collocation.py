@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
+from bifurx.bifurcations.test_funcs import extract_leading_hopf_pair
 from bifurx.options import CollocationOptions, ContinuationOptions
 
 
@@ -298,6 +299,8 @@ def initialize_from_hopf(
     p_hopf: float | jax.Array,
     eps: float | jax.Array | None = None,
     p_init: float | jax.Array | None = None,
+    direction: float = -1.0,
+    ds: float | None = None,
     options: CollocationOptions | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Construct an initial periodic orbit guess near a Hopf bifurcation in pure JAX.
@@ -313,7 +316,11 @@ def initialize_from_hopf(
     eps : float | jax.Array | None, optional
         Perturbation amplitude for the initial cycle (defaults to options.eps).
     p_init : float | jax.Array | None, optional
-        Initial parameter slightly detuned from Hopf. Defaults to p_hopf - 0.001.
+        Initial parameter slightly detuned from Hopf. Defaults to p_hopf + direction * ds (or eps).
+    direction : float, default=-1.0
+        Direction along the parameter to detune from the Hopf point.
+    ds : float | jax.Array | None, optional
+        Step size for detuning (defaults to eps if None).
     options : CollocationOptions | None, optional
         Collocation options configuration. Overridden by explicit eps.
 
@@ -331,15 +338,15 @@ def initialize_from_hopf(
     Ju = jax.jacobian(lambda u_: problem.fn(u_, p_h, **problem.kwargs))(u_h)
     eigs, vecs = jnp.linalg.eig(Ju)
 
-    complex_mask = jnp.abs(jnp.imag(eigs)) > 1e-4 * (1.0 + jnp.abs(eigs))
-    real_abs = jnp.where(complex_mask, jnp.abs(jnp.real(eigs)), jnp.inf)
-    chosen_idx = jnp.argmin(real_abs)
-    val = eigs[chosen_idx]
-    omega = jnp.abs(jnp.imag(val))
+    _, leading_real, omega = extract_leading_hopf_pair(Ju, eigs=eigs)
+    target_eig = leading_real + 1j * omega
+    chosen_idx = jnp.argmin(jnp.abs(eigs - target_eig))
     T0 = 2.0 * jnp.pi / omega
     vec = vecs[:, chosen_idx]
 
     # Check for degenerate Hopf bifurcation (repeated critical imaginary eigenvalues) (#14)
+    rel_tol = 1e-4
+    complex_mask = jnp.abs(jnp.imag(eigs)) > rel_tol * (1.0 + jnp.abs(eigs))
     crit_mask = complex_mask & (jnp.abs(jnp.real(eigs)) < 1e-2)
     crit_freqs = jnp.where(crit_mask, jnp.abs(jnp.imag(eigs)), -1.0)
     freq_diffs = jnp.abs(crit_freqs - omega)
@@ -377,9 +384,11 @@ def initialize_from_hopf(
         - jnp.sin(theta_gauss)[:, :, None] * v_i[None, None, :]
     )
 
-    p_init_arr = (
-        p_h - 0.001 if p_init is None else jnp.squeeze(jnp.asarray(p_init, dtype=jnp.float64))
-    )
+    if p_init is not None:
+        p_init_arr = jnp.squeeze(jnp.asarray(p_init, dtype=jnp.float64))
+    else:
+        step = eps_val if ds is None else jnp.squeeze(jnp.asarray(ds, dtype=jnp.float64))
+        p_init_arr = p_h + direction * step
 
     return mesh, u_mesh, u_gauss, T0, p_init_arr
 
@@ -425,8 +434,8 @@ def solve_periodic_orbit(
     max_iters : int | None, optional
         Maximum Newton iterations (defaults to options.max_iters).
     non_trivial : bool, default=False
-        If True, forbids collapsing onto the trivial constant equilibrium by penalizing
-        zero amplitude during Newton iterations and requiring amplitude >= min_amplitude (#14).
+        If True, forbids collapsing onto the trivial constant equilibrium by rejecting
+        candidate steps collapsing below min_amplitude and requiring amplitude >= min_amplitude (#14, #21).
     min_amplitude : float | None, optional
         Minimum RMS amplitude required for non_trivial=True (defaults to options.min_amplitude).
     options : CollocationOptions | None, optional
@@ -500,16 +509,16 @@ def solve_periodic_orbit(
         res = eval_res(X)
         J = jac_fn(X)
 
-        s = jnp.linalg.svdvals(J)
-        is_inv = (s[-1] / (s[0] + 1e-30)) > 1e-12
+        dX_solve = -jnp.linalg.solve(J, res)
+        is_finite = jnp.all(jnp.isfinite(dX_solve))
 
-        def _solve() -> jax.Array:
-            return -jnp.linalg.solve(J, res)
+        def _solve_direct() -> jax.Array:
+            return dX_solve
 
-        def _lstsq() -> jax.Array:
+        def _solve_pinv() -> jax.Array:
             return -jnp.linalg.lstsq(J, res, rcond=1e-12)[0]
 
-        dX = jax.lax.cond(is_inv, _solve, _lstsq)
+        dX = jax.lax.cond(is_finite, _solve_direct, _solve_pinv)
 
         def _step_score(x_cand: jax.Array) -> jax.Array:
             rn = jnp.linalg.norm(eval_res(x_cand))
@@ -517,12 +526,7 @@ def solve_periodic_orbit(
                 u_m = x_cand[:n_mesh].reshape((N, problem.dim))
                 u_m_mean = jnp.mean(u_m, axis=0, keepdims=True)
                 amp_cand = jnp.sqrt(jnp.mean(jnp.sum((u_m - u_m_mean) ** 2, axis=-1)))
-                collapse_pen = jnp.where(
-                    (amp_init > min_amp_val) & (amp_cand < 0.25 * amp_init),
-                    1e4 * (0.25 * amp_init - amp_cand) ** 2,
-                    0.0,
-                )
-                return rn + collapse_pen
+                return jnp.where((amp_init >= min_amp_val) & (amp_cand < min_amp_val), jnp.inf, rn)
             return rn
 
         X1 = X + dX

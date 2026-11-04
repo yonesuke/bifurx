@@ -18,6 +18,7 @@ from bifurx.bifurcations.switch import compute_bifurcation_tangents, switch_bran
 from bifurx.bifurcations.test_funcs import (
     bialternate_matrix,
     evaluate_point_diagnostics,
+    extract_leading_hopf_pair,
     refine_bifurcation_point,
     refine_fold_moore_spence,
     test_func_branch_point,
@@ -112,6 +113,7 @@ __all__ = [
     "equidistribute_mesh",
     "eval_lagrange_basis",
     "evaluate_point_diagnostics",
+    "extract_leading_hopf_pair",
     "gauss_legendre_nodes",
     "initialize_from_hopf",
     "redistribute_mesh",
