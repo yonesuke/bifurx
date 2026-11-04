@@ -140,7 +140,7 @@ def continuation_codim2(
         else:
             Ju0 = jac_u_fn(u0, p1_0, p2_0)
             eigs, vecs = jnp.linalg.eig(Ju0)
-            complex_mask = jnp.abs(jnp.imag(eigs)) > 1e-4
+            complex_mask = jnp.abs(jnp.imag(eigs)) > 1e-4 * (1.0 + jnp.abs(eigs))
             real_abs = jnp.where(complex_mask, jnp.abs(jnp.real(eigs)), jnp.inf)
             idx_hb = jnp.argmin(real_abs)
             omega0 = jnp.abs(jnp.imag(eigs[idx_hb]))

@@ -48,6 +48,7 @@ def test_options_default_values():
     newton = NewtonOptions()
     assert newton.tol == 1e-8
     assert newton.step_tol == 1e-8
+    assert newton.rel_tol == 1e-8
     assert newton.max_iters == 15
     assert newton.solver_method == "auto"
 
@@ -60,6 +61,8 @@ def test_options_default_values():
     assert cont.detect_bifurcations is True
     assert cont.direction == 1.0
     assert cont.newton == NewtonOptions()
+    assert cont.bif_p_tol == 1e-4
+    assert cont.bif_u_tol == 1e-3
 
     colloc = CollocationOptions()
     assert colloc.num_intervals == 25
@@ -88,19 +91,26 @@ def test_options_immutability():
 def test_options_replace_method():
     """Verify that .replace() returns a new updated instance without modifying original."""
     newton0 = NewtonOptions()
-    newton1 = newton0.replace(tol=1e-5, max_iters=30)
+    newton1 = newton0.replace(tol=1e-5, rel_tol=1e-6, max_iters=30)
     assert newton0.tol == 1e-8
+    assert newton0.rel_tol == 1e-8
     assert newton0.max_iters == 15
     assert newton1.tol == 1e-5
+    assert newton1.rel_tol == 1e-6
     assert newton1.max_iters == 30
 
     cont0 = ContinuationOptions()
-    cont1 = cont0.replace(ds=0.01, max_steps=200, newton=newton1)
+    cont1 = cont0.replace(ds=0.01, max_steps=200, bif_p_tol=1e-5, bif_u_tol=1e-4, newton=newton1)
     assert cont0.ds == 0.05
     assert cont0.max_steps == 100
+    assert cont0.bif_p_tol == 1e-4
+    assert cont0.bif_u_tol == 1e-3
     assert cont1.ds == 0.01
     assert cont1.max_steps == 200
+    assert cont1.bif_p_tol == 1e-5
+    assert cont1.bif_u_tol == 1e-4
     assert cont1.newton.tol == 1e-5
+    assert cont1.newton.rel_tol == 1e-6
 
     colloc0 = CollocationOptions()
     colloc1 = colloc0.replace(num_intervals=10, min_amplitude=1e-3)
@@ -114,7 +124,9 @@ def test_options_pytree_registration():
     cont = ContinuationOptions(
         ds=0.02,
         max_steps=50,
-        newton=NewtonOptions(tol=1e-6, max_iters=20),
+        newton=NewtonOptions(tol=1e-6, rel_tol=1e-7, max_iters=20),
+        bif_p_tol=1e-5,
+        bif_u_tol=1e-4,
     )
     leaves, treedef = jax.tree_util.tree_flatten(cont)
     rebuilt = jax.tree_util.tree_unflatten(treedef, leaves)

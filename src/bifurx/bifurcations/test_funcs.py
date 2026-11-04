@@ -68,10 +68,10 @@ def test_func_hopf(Ju: jax.Array, eigs: jax.Array | None = None) -> jax.Array:
     """Hopf bifurcation test function.
 
     Returns the real part of the leading complex-conjugate eigenvalue pair with non-negligible
-    imaginary component (|Im| > 1e-4). Returns NaN if all eigenvalues are purely real.
+    imaginary component (|Im| > 1e-4 * (1.0 + |lambda|)). Returns NaN if all eigenvalues are purely real.
     """
     eigvals = jnp.linalg.eigvals(Ju) if eigs is None else eigs
-    complex_mask = jnp.abs(jnp.imag(eigvals)) > 1e-4
+    complex_mask = jnp.abs(jnp.imag(eigvals)) > 1e-4 * (1.0 + jnp.abs(eigvals))
     leading = jnp.max(jnp.where(complex_mask, jnp.real(eigvals), -jnp.inf))
     return jnp.where(jnp.any(complex_mask), leading, jnp.nan)
 

@@ -331,7 +331,7 @@ def initialize_from_hopf(
     Ju = jax.jacobian(lambda u_: problem.fn(u_, p_h, **problem.kwargs))(u_h)
     eigs, vecs = jnp.linalg.eig(Ju)
 
-    complex_mask = jnp.abs(jnp.imag(eigs)) > 1e-4
+    complex_mask = jnp.abs(jnp.imag(eigs)) > 1e-4 * (1.0 + jnp.abs(eigs))
     real_abs = jnp.where(complex_mask, jnp.abs(jnp.real(eigs)), jnp.inf)
     chosen_idx = jnp.argmin(real_abs)
     val = eigs[chosen_idx]

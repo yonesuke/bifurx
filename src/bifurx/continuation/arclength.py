@@ -128,12 +128,15 @@ def continuation_scan(
     n_steps: int | None = None,
     newton_tol: float | None = None,
     newton_step_tol: float | None = None,
+    newton_rel_tol: float | None = None,
     newton_max_iters: int | None = None,
     param_bounds: tuple[float, float] | jax.Array | None = None,
     adaptive_step: bool | None = None,
     solver_method: str | None = None,
     options: ContinuationOptions | None = None,
     max_steps: int | None = None,
+    bif_p_tol: float | None = None,
+    bif_u_tol: float | None = None,
 ) -> ContinuationScanResult:
     """End-to-end JIT pseudo-arclength continuation using `jax.lax.scan`.
 
@@ -195,6 +198,8 @@ def continuation_scan(
         newton_kwargs["tol"] = newton_tol
     if newton_step_tol is not None:
         newton_kwargs["step_tol"] = newton_step_tol
+    if newton_rel_tol is not None:
+        newton_kwargs["rel_tol"] = newton_rel_tol
     if newton_max_iters is not None:
         newton_kwargs["max_iters"] = newton_max_iters
     if solver_method is not None:
@@ -218,6 +223,10 @@ def continuation_scan(
         cont_kwargs["direction"] = direction
     if adaptive_step is not None:
         cont_kwargs["adaptive_step"] = adaptive_step
+    if bif_p_tol is not None:
+        cont_kwargs["bif_p_tol"] = bif_p_tol
+    if bif_u_tol is not None:
+        cont_kwargs["bif_u_tol"] = bif_u_tol
 
     opts = base_opts.replace(newton=resolved_newton, **cont_kwargs)
 
@@ -260,6 +269,7 @@ def continuation_scan(
             ds=cur_ds,
             tol=newton_opts.tol,
             step_tol=newton_opts.step_tol,
+            rel_tol=newton_opts.rel_tol,
             max_iters=newton_opts.max_iters,
             solver_method=newton_opts.solver_method,
             options=newton_opts,
@@ -350,6 +360,8 @@ def continuation(
     ds_max: float | None = None,
     max_steps: int | None = None,
     newton_tol: float | None = None,
+    newton_step_tol: float | None = None,
+    newton_rel_tol: float | None = None,
     newton_max_iters: int | None = None,
     detect_bifurcations: bool | None = None,
     param_bounds: tuple[float, float] | None = None,
@@ -357,6 +369,8 @@ def continuation(
     branch_name: str = "Branch",
     verbose: bool = False,
     options: ContinuationOptions | None = None,
+    bif_p_tol: float | None = None,
+    bif_u_tol: float | None = None,
     **kwargs: Any,
 ) -> ContinuationResult:
     """Keller pseudo-arclength continuation loop.
@@ -379,10 +393,18 @@ def continuation(
         newton_kwargs["tol"] = newton_tol
     elif "tol" in kwargs:
         newton_kwargs["tol"] = kwargs["tol"]
-    if "newton_step_tol" in kwargs:
+    if newton_step_tol is not None:
+        newton_kwargs["step_tol"] = newton_step_tol
+    elif "newton_step_tol" in kwargs:
         newton_kwargs["step_tol"] = kwargs["newton_step_tol"]
     elif "step_tol" in kwargs:
         newton_kwargs["step_tol"] = kwargs["step_tol"]
+    if newton_rel_tol is not None:
+        newton_kwargs["rel_tol"] = newton_rel_tol
+    elif "newton_rel_tol" in kwargs:
+        newton_kwargs["rel_tol"] = kwargs["newton_rel_tol"]
+    elif "rel_tol" in kwargs:
+        newton_kwargs["rel_tol"] = kwargs["rel_tol"]
     if newton_max_iters is not None:
         newton_kwargs["max_iters"] = newton_max_iters
     elif "max_iters" in kwargs:
@@ -408,6 +430,14 @@ def continuation(
         cont_kwargs["direction"] = direction
     if detect_bifurcations is not None:
         cont_kwargs["detect_bifurcations"] = detect_bifurcations
+    if bif_p_tol is not None:
+        cont_kwargs["bif_p_tol"] = bif_p_tol
+    elif "bif_p_tol" in kwargs:
+        cont_kwargs["bif_p_tol"] = kwargs["bif_p_tol"]
+    if bif_u_tol is not None:
+        cont_kwargs["bif_u_tol"] = bif_u_tol
+    elif "bif_u_tol" in kwargs:
+        cont_kwargs["bif_u_tol"] = kwargs["bif_u_tol"]
 
     opts = base_opts.replace(newton=resolved_newton, **cont_kwargs)
 
@@ -529,15 +559,16 @@ def continuation(
 
         bif_points.sort(key=lambda pt: pt.step)
 
-        # De-duplicate bifurcation points (same bif_type and close in parameter & state) (#2)
+        # De-duplicate bifurcation points (same bif_type and close in parameter & state) (#2, #20)
         deduped: list[BifurcationPoint] = []
         for bp in bif_points:
             is_dup = False
             for prev in deduped:
                 if (
                     bp.bif_type == prev.bif_type
-                    and abs(bp.p - prev.p) < 1e-4
-                    and float(jnp.linalg.norm(bp.u - prev.u)) < 1e-3
+                    and abs(bp.p - prev.p) < opts.bif_p_tol * (1.0 + abs(prev.p))
+                    and float(jnp.linalg.norm(bp.u - prev.u))
+                    < opts.bif_u_tol * (1.0 + float(jnp.linalg.norm(prev.u)))
                 ):
                     is_dup = True
                     break

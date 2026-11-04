@@ -18,6 +18,8 @@ class NewtonOptions:
         Residual norm convergence tolerance.
     step_tol : float, default=1e-8
         Step size norm convergence tolerance.
+    rel_tol : float, default=1e-8
+        Relative residual norm convergence tolerance.
     max_iters : int, default=15
         Maximum number of Newton iterations per step.
     solver_method : str, default="auto"
@@ -26,6 +28,7 @@ class NewtonOptions:
 
     tol: float = 1e-8
     step_tol: float = 1e-8
+    rel_tol: float = 1e-8
     max_iters: int = 15
     solver_method: str = "auto"
 
@@ -34,15 +37,21 @@ class NewtonOptions:
         return dataclasses.replace(self, **changes)
 
     def tree_flatten(self) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-        children = (self.tol, self.step_tol)
+        children = (self.tol, self.step_tol, self.rel_tol)
         aux_data = (self.max_iters, self.solver_method)
         return children, aux_data
 
     @classmethod
     def tree_unflatten(cls, aux_data: tuple[Any, ...], children: tuple[Any, ...]) -> Self:
-        tol, step_tol = children
+        tol, step_tol, rel_tol = children
         max_iters, solver_method = aux_data
-        return cls(tol=tol, step_tol=step_tol, max_iters=max_iters, solver_method=solver_method)
+        return cls(
+            tol=tol,
+            step_tol=step_tol,
+            rel_tol=rel_tol,
+            max_iters=max_iters,
+            solver_method=solver_method,
+        )
 
 
 @jax.tree_util.register_pytree_node_class
@@ -68,6 +77,10 @@ class ContinuationOptions:
         Continuation direction (+1.0 forward, -1.0 backward).
     newton : NewtonOptions
         Newton corrector options.
+    bif_p_tol : float, default=1e-4
+        Relative tolerance in parameter for bifurcation point de-duplication.
+    bif_u_tol : float, default=1e-3
+        Relative tolerance in state norm for bifurcation point de-duplication.
     """
 
     ds: float = 0.05
@@ -78,19 +91,29 @@ class ContinuationOptions:
     detect_bifurcations: bool = True
     direction: float = 1.0
     newton: NewtonOptions = field(default_factory=NewtonOptions)
+    bif_p_tol: float = 1e-4
+    bif_u_tol: float = 1e-3
 
     def replace(self, **changes: Any) -> Self:
         """Return a copy of the options with updated fields."""
         return dataclasses.replace(self, **changes)
 
     def tree_flatten(self) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-        children = (self.ds, self.ds_min, self.ds_max, self.direction, self.newton)
+        children = (
+            self.ds,
+            self.ds_min,
+            self.ds_max,
+            self.direction,
+            self.newton,
+            self.bif_p_tol,
+            self.bif_u_tol,
+        )
         aux_data = (self.max_steps, self.adaptive_step, self.detect_bifurcations)
         return children, aux_data
 
     @classmethod
     def tree_unflatten(cls, aux_data: tuple[Any, ...], children: tuple[Any, ...]) -> Self:
-        ds, ds_min, ds_max, direction, newton = children
+        ds, ds_min, ds_max, direction, newton, bif_p_tol, bif_u_tol = children
         max_steps, adaptive_step, detect_bifurcations = aux_data
         return cls(
             ds=ds,
@@ -101,6 +124,8 @@ class ContinuationOptions:
             detect_bifurcations=detect_bifurcations,
             direction=direction,
             newton=newton,
+            bif_p_tol=bif_p_tol,
+            bif_u_tol=bif_u_tol,
         )
 
 

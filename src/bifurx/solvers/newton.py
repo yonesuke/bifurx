@@ -31,6 +31,7 @@ def bordered_newton_solve(
     ds: float | jax.Array,
     tol: float | None = None,
     step_tol: float | None = None,
+    rel_tol: float | None = None,
     max_iters: int | None = None,
     solver_method: str | None = None,
     options: NewtonOptions | None = None,
@@ -64,6 +65,8 @@ def bordered_newton_solve(
         Residual norm convergence tolerance (defaults to options.tol).
     step_tol : float | None, optional
         Step size convergence tolerance (defaults to options.step_tol).
+    rel_tol : float | None, optional
+        Relative residual norm convergence tolerance (defaults to options.rel_tol).
     max_iters : int | None, optional
         Maximum Newton iterations (defaults to options.max_iters).
     solver_method : str | None, optional
@@ -79,6 +82,14 @@ def bordered_newton_solve(
     base_opts = NewtonOptions() if options is None else options
     tol_val = base_opts.tol if tol is None else tol
     step_tol_val = base_opts.step_tol if step_tol is None else step_tol
+    if rel_tol is not None:
+        rel_tol_val = rel_tol
+    elif options is not None:
+        rel_tol_val = base_opts.rel_tol
+    elif tol is not None:
+        rel_tol_val = tol_val
+    else:
+        rel_tol_val = base_opts.rel_tol
     max_iters_val = base_opts.max_iters if max_iters is None else max_iters
     solver_method_val = base_opts.solver_method if solver_method is None else solver_method
 
@@ -95,7 +106,8 @@ def bordered_newton_solve(
     f_0 = problem.residual(u_0, p_0)
     arc_0 = jnp.dot(tau_u, u_0 - u_p) + tau_p * (p_0 - p_p) - ds_val
     res_norm_0 = jnp.sqrt(jnp.sum(f_0**2) + arc_0**2)
-    conv_0 = res_norm_0 < tol_val
+    res_tol = tol_val + rel_tol_val * res_norm_0
+    conv_0 = res_norm_0 <= tol_val
 
     init_state = (u_0, p_0, jnp.int32(0), conv_0, res_norm_0, jnp.array(0.0, dtype=jnp.float64))
 
@@ -135,6 +147,9 @@ def bordered_newton_solve(
         arc_next = jnp.dot(tau_u, u_next - u_p) + tau_p * (p_next - p_p) - ds_val
         res_norm_next = jnp.sqrt(jnp.sum(f_next**2) + arc_next**2)
 
+        x_k_norm = jnp.sqrt(jnp.sum(u**2) + p**2)
+        step_tol_scaled = step_tol_val * (1.0 + x_k_norm)
+
         is_valid = (
             jnp.isfinite(res_norm_next)
             & jnp.isfinite(step_norm)
@@ -142,8 +157,8 @@ def bordered_newton_solve(
             & jnp.isfinite(dp)
         )
         conv_next = is_valid & (
-            (res_norm_next < tol_val)
-            | ((step_norm < step_tol_val) & (res_norm_next < 10.0 * tol_val))
+            (res_norm_next <= res_tol)
+            | ((step_norm <= step_tol_scaled) & (res_norm_next <= 10.0 * res_tol))
         )
         it_next = jnp.where(is_valid, it + 1, jnp.int32(max_iters_val))
         return (u_next, p_next, it_next, conv_next, res_norm_next, step_norm)
