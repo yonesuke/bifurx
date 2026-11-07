@@ -402,8 +402,7 @@ This reveals:
 
 | Function / Class | Description |
 | :--- | :--- |
-| `compute_iprc_from_collocation(sol, p)` | Computes $Z(t)$ directly from converged `PeriodicOrbitResult` via linear adjoint solve. |
-| `compute_iprc(fn, u_mesh, T, p)` | High-level wrapper computing iPRC from orbit mesh or BVP solution. |
-| `solve_coupled_orbit_prc(problem, u_init, T_init, p)` | Jointly solves limit cycle and adjoint iPRC. |
+| `compute_iprc(sol_or_fn, ...)` | Computes $Z(t)$ from a converged `PeriodicOrbitResult` or a vector field `fn` with `(u_mesh, T, p)` via linear adjoint collocation. |
 | `continuation_iprc(problem, u_init, T_init, p_start, p_end)` | Parameter continuation tracing $(u^*(p), T(p), Z(p))$ across parameter intervals. |
-| `find_zero_crossings(signal, time_grid)` | Accurate root-finding for phase zero-crossings and advance/delay boundaries. |
+| `IPRCResult` | NamedTuple holding `ts`, `theta`, `orbit`, `Z`, `period`, `omega`, `peak_amplitudes`, and `zero_crossings`. |
+| `IPRCContinuationResult` | NamedTuple holding continued parameter, period, amplitude, orbit, and iPRC trajectories. |

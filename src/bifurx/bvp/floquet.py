@@ -6,28 +6,11 @@ import jax.numpy as jnp
 from bifurx.bvp.collocation import PeriodicOrbitResult
 
 
-def compute_monodromy_condensation(
+def _monodromy_condensation(
     sol: PeriodicOrbitResult,
     p: float | jax.Array = 0.0,
 ) -> jax.Array:
-    """Compute the monodromy matrix M via de Boor-Swartz collocation Jacobian condensation.
-
-    Linearizes the collocation equations on each interval k to obtain interval transition
-    matrices M_k such that delta u_{k+1} = M_k delta u_k.
-    The overall monodromy matrix is M = M_{N-1} * M_{N-2} * ... * M_0.
-
-    Parameters
-    ----------
-    sol : PeriodicOrbitResult
-        Converged periodic orbit result.
-    p : float | jax.Array, default=0.0
-        System parameter value.
-
-    Returns
-    -------
-    jax.Array of shape (dim, dim)
-        The monodromy matrix M.
-    """
+    """Compute the monodromy matrix M via de Boor-Swartz collocation Jacobian condensation."""
     mesh = jnp.asarray(sol.mesh, dtype=jnp.float64)
     u_gauss = jnp.asarray(sol.u_gauss, dtype=jnp.float64)
     T = jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64))
@@ -42,9 +25,8 @@ def compute_monodromy_condensation(
     eye_m = jnp.eye(m, dtype=jnp.float64)
 
     def interval_step(M_total: jax.Array, k: jax.Array) -> tuple[jax.Array, None]:
-        """Accumulate the interval transition matrix M_k into the running product."""
         hk = mesh[k + 1] - mesh[k]
-        Ju_k = jax.vmap(jac_fn)(u_gauss[k])  # (m, n, n)
+        Ju_k = jax.vmap(jac_fn)(u_gauss[k])
 
         A_blocks = (D[:, 1:] / hk)[:, :, None, None] * eye_n[None, None, :, :] - T * eye_m[
             :, :, None, None
@@ -60,36 +42,27 @@ def compute_monodromy_condensation(
     return M_total
 
 
-def compute_monodromy_variational(
+def _monodromy_variational(
     sol: PeriodicOrbitResult,
     p: float | jax.Array = 0.0,
     num_steps: int = 400,
 ) -> jax.Array:
-    """Compute the monodromy matrix M by integrating the variational equation:
-
-    dPhi/dt = T * (df/du)(u(t)) * Phi(t),  Phi(0) = I_n.
-    """
+    """Compute the monodromy matrix M by integrating the variational equation via RK4."""
     n = sol.problem.dim
     T = jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64))
     dt = 1.0 / num_steps
-
     jac_fn = jax.jacobian(lambda u_: sol.problem.fn(u_, p, **sol.problem.kwargs))
 
     def rk4_step(Phi: jax.Array, step: jax.Array) -> tuple[jax.Array, None]:
-        """Single RK4 step of dPhi/dt = T * (df/du)(u(t)) * Phi."""
         t0 = step * dt
-        t_mid = t0 + 0.5 * dt
-        t1 = t0 + dt
-
         A0 = T * jac_fn(sol.evaluate(t0))
-        A_mid = T * jac_fn(sol.evaluate(t_mid))
-        A1 = T * jac_fn(sol.evaluate(t1))
+        A_mid = T * jac_fn(sol.evaluate(t0 + 0.5 * dt))
+        A1 = T * jac_fn(sol.evaluate(t0 + dt))
 
         k1 = A0 @ Phi
         k2 = A_mid @ (Phi + 0.5 * dt * k1)
         k3 = A_mid @ (Phi + 0.5 * dt * k2)
         k4 = A1 @ (Phi + dt * k3)
-
         return Phi + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4), None
 
     Phi, _ = jax.lax.scan(rk4_step, jnp.eye(n, dtype=jnp.float64), jnp.arange(num_steps))
@@ -101,27 +74,11 @@ def compute_floquet_multipliers(
     p: float | jax.Array = 0.0,
     method: str = "condensation",
 ) -> tuple[jax.Array, jax.Array]:
-    """Compute Floquet multipliers and monodromy matrix for a periodic orbit.
-
-    Parameters
-    ----------
-    sol : PeriodicOrbitResult
-        Converged periodic orbit.
-    p : float | jax.Array, default=0.0
-        System parameter value.
-    method : str, default="condensation"
-        Method for monodromy matrix computation: "condensation" or "variational".
-
-    Returns
-    -------
-    tuple[jax.Array, jax.Array]
-        - multipliers: 1D complex array of Floquet multipliers, sorted by magnitude descending.
-        - M: Monodromy matrix of shape (dim, dim).
-    """
+    """Compute Floquet multipliers and monodromy matrix for a periodic orbit."""
     if method == "condensation":
-        M = compute_monodromy_condensation(sol, p=p)
+        M = _monodromy_condensation(sol, p=p)
     elif method == "variational":
-        M = compute_monodromy_variational(sol, p=p)
+        M = _monodromy_variational(sol, p=p)
     else:
         msg = f"Unknown method: {method}. Choose 'condensation' or 'variational'."
         raise ValueError(msg)

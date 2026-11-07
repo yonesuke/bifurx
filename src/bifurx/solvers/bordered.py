@@ -28,24 +28,21 @@ def build_bordered_matrix(
     d: float | jax.Array,
 ) -> jax.Array:
     """Construct full (n+1) x (n+1) bordered matrix M = [[A, b], [c^T, d]]."""
-    b_col = b.reshape(-1, 1)
-    c_row = c.reshape(1, -1)
-    d_elem = jnp.atleast_2d(d)
-    return jnp.block([[A, b_col], [c_row, d_elem]])
+    return jnp.block([[A, b.reshape(-1, 1)], [c.reshape(1, -1), jnp.atleast_2d(d)]])
 
 
-def _build_bordered_matrix(
+def _block_lu_components(
     A: jax.Array,
-    b: jax.Array,
-    c: jax.Array,
-    d: float | jax.Array,
-    f: jax.Array,
-    g: float | jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    """Construct full (n+1) x (n+1) matrix M and RHS vector r."""
-    M = build_bordered_matrix(A, b, c, d)
-    r = jnp.concatenate([f.ravel(), jnp.atleast_1d(g)])
-    return M, r
+    b_flat: jax.Array,
+    c_flat: jax.Array,
+    d_scalar: jax.Array,
+    f_flat: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    rhs = jnp.stack([b_flat, f_flat], axis=-1)
+    sol_vw = jnp.linalg.solve(A, rhs)
+    v, w = sol_vw[:, 0], sol_vw[:, 1]
+    delta = d_scalar - jnp.dot(c_flat, v)
+    return v, w, delta
 
 
 def solve_bordered_block(
@@ -56,24 +53,11 @@ def solve_bordered_block(
     f: jax.Array,
     g: float | jax.Array,
 ) -> BorderedSolution:
-    """Solve bordered linear system using Block LU / Sherman-Morrison-Woodbury elimination.
-
-    Assumes matrix A is non-singular.
-    """
-    b_flat = b.ravel()
-    f_flat = f.ravel()
+    """Solve bordered linear system using Block LU / Sherman-Morrison-Woodbury elimination."""
     c_flat = c.ravel()
-
-    # Solve A v = b and A w = f in a single batched call
-    rhs = jnp.stack([b_flat, f_flat], axis=-1)
-    sol_vw = jnp.linalg.solve(A, rhs)
-    v = sol_vw[:, 0]
-    w = sol_vw[:, 1]
-
-    delta = d - jnp.dot(c_flat, v)
-    y = (g - jnp.dot(c_flat, w)) / delta
-    x = w - y * v
-    return BorderedSolution(x=x, y=jnp.squeeze(y))
+    v, w, delta = _block_lu_components(A, b.ravel(), c_flat, jnp.squeeze(d), f.ravel())
+    y = (jnp.squeeze(g) - jnp.dot(c_flat, w)) / delta
+    return BorderedSolution(x=w - y * v, y=jnp.squeeze(y))
 
 
 def solve_bordered_direct(
@@ -87,18 +71,16 @@ def solve_bordered_direct(
 ) -> BorderedSolution:
     """Solve bordered linear system via direct factorization or SVD/least-squares fallback."""
     n = A.shape[0]
-    M, r = _build_bordered_matrix(A, b, c, d, f, g)
+    M = build_bordered_matrix(A, b, c, d)
+    r = jnp.concatenate([f.ravel(), jnp.atleast_1d(g)])
 
     s = jnp.linalg.svdvals(M)
     is_invertible = (s[-1] / (s[0] + 1e-30)) > rcond
-
-    def _solve_inv() -> jax.Array:
-        return jnp.linalg.solve(M, r)
-
-    def _solve_lstsq() -> jax.Array:
-        return jnp.linalg.lstsq(M, r, rcond=rcond)[0]
-
-    z = jax.lax.cond(is_invertible, _solve_inv, _solve_lstsq)
+    z = jax.lax.cond(
+        is_invertible,
+        lambda: jnp.linalg.solve(M, r),
+        lambda: jnp.linalg.lstsq(M, r, rcond=rcond)[0],
+    )
     return BorderedSolution(x=z[:n], y=jnp.squeeze(z[n]))
 
 
@@ -112,40 +94,9 @@ def solve_bordered_system(
     method: str = "auto",
     rcond: float = 1e-10,
 ) -> BorderedSolution:
-    """Solve bordered linear system:
-
-    [[A, b], [c^T, d]] [x, y]^T = [f, g]^T
-
-    Parameters
-    ----------
-    A : jax.Array of shape (n, n)
-        Leading block matrix.
-    b : jax.Array of shape (n,) or (n, 1)
-        Right border vector.
-    c : jax.Array of shape (n,) or (1, n)
-        Bottom border vector.
-    d : float or jax.Array
-        Scalar corner element.
-    f : jax.Array of shape (n,)
-        Top RHS vector.
-    g : float or jax.Array
-        Bottom RHS scalar.
-    method : str, default="auto"
-        Solver method: "block" (Block LU), "direct" (full bordered solve), or "auto"
-        (uses Block LU when A is non-singular, and fallback to direct when A is singular).
-    rcond : float, default=1e-10
-        Threshold for reciprocal condition number.
-
-    Returns
-    -------
-    BorderedSolution
-        Named tuple (x, y) containing the solution components.
-    """
-    b_flat = b.ravel()
-    c_flat = c.ravel()
-    f_flat = f.ravel()
-    d_scalar = jnp.squeeze(d)
-    g_scalar = jnp.squeeze(g)
+    """Solve bordered linear system [[A, b], [c^T, d]] [x, y]^T = [f, g]^T."""
+    b_flat, c_flat, f_flat = b.ravel(), c.ravel(), f.ravel()
+    d_scalar, g_scalar = jnp.squeeze(d), jnp.squeeze(g)
 
     if method == "block":
         return solve_bordered_block(A, b_flat, c_flat, d_scalar, f_flat, g_scalar)
@@ -154,23 +105,19 @@ def solve_bordered_system(
         return solve_bordered_direct(A, b_flat, c_flat, d_scalar, f_flat, g_scalar, rcond=rcond)
 
     if method == "auto":
-        rhs = jnp.stack([b_flat, f_flat], axis=-1)
-        sol_vw = jnp.linalg.solve(A, rhs)
-        v = sol_vw[:, 0]
-        w = sol_vw[:, 1]
-        delta = d_scalar - jnp.dot(c_flat, v)
-        is_valid = jnp.all(jnp.isfinite(sol_vw)) & (
-            jnp.abs(delta) > rcond * (1.0 + jnp.abs(d_scalar))
+        v, w, delta = _block_lu_components(A, b_flat, c_flat, d_scalar, f_flat)
+        is_valid = (
+            jnp.all(jnp.isfinite(v))
+            & jnp.all(jnp.isfinite(w))
+            & (jnp.abs(delta) > rcond * (1.0 + jnp.abs(d_scalar)))
         )
-
         delta_safe = jnp.where(is_valid, delta, 1.0)
         v_safe = jnp.where(is_valid, v, 0.0)
         w_safe = jnp.where(is_valid, w, 0.0)
 
         def _block_branch() -> tuple[jax.Array, jax.Array]:
             y_val = (g_scalar - jnp.dot(c_flat, w_safe)) / delta_safe
-            x_val = w_safe - y_val * v_safe
-            return x_val, jnp.squeeze(y_val)
+            return w_safe - y_val * v_safe, jnp.squeeze(y_val)
 
         def _direct_branch() -> tuple[jax.Array, jax.Array]:
             sol = solve_bordered_direct(A, b_flat, c_flat, d_scalar, f_flat, g_scalar, rcond=rcond)

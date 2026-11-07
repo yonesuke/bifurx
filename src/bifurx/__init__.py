@@ -10,19 +10,15 @@ import jax
 _logger = logging.getLogger("bifurx")
 
 # Enable 64-bit precision in JAX by default for numerical continuation.
-if not jax.config.jax_enable_x64:
+if not getattr(jax.config, "jax_enable_x64", False):
     jax.config.update("jax_enable_x64", True)
     _logger.info("bifurx enabled jax_enable_x64=True for double precision continuation.")
 
-from bifurx.bifurcations.switch import compute_bifurcation_tangents, switch_branch
+from bifurx.bifurcations.switch import switch_branch
 from bifurx.bifurcations.test_funcs import (
-    bialternate_matrix,
     evaluate_point_diagnostics,
     extract_leading_hopf_pair,
     refine_bifurcation_point,
-    refine_fold_moore_spence,
-    test_func_branch_point,
-    test_func_fold,
     test_func_hopf,
 )
 from bifurx.bvp.collocation import (
@@ -30,17 +26,11 @@ from bifurx.bvp.collocation import (
     PeriodicOrbitResult,
     collocation_matrices,
     continue_periodic_orbit,
-    eval_lagrange_basis,
-    gauss_legendre_nodes,
     initialize_from_hopf,
     solve_periodic_orbit,
 )
-from bifurx.bvp.floquet import (
-    compute_floquet_multipliers,
-    compute_monodromy_condensation,
-    compute_monodromy_variational,
-)
-from bifurx.bvp.mesh import equidistribute_mesh, redistribute_mesh
+from bifurx.bvp.floquet import compute_floquet_multipliers
+from bifurx.bvp.mesh import redistribute_mesh
 from bifurx.codim2.moore_spence import (
     Codim2Result,
     continuation_codim2,
@@ -62,9 +52,7 @@ from bifurx.prc.adjoint import (
     IPRCContinuationResult,
     IPRCResult,
     compute_iprc,
-    compute_iprc_from_collocation,
     continuation_iprc,
-    solve_coupled_orbit_prc,
 )
 from bifurx.problem import BifurcationProblem
 from bifurx.solvers.bordered import (
@@ -95,37 +83,25 @@ __all__ = [
     "NewtonOptions",
     "NewtonResult",
     "PeriodicOrbitResult",
-    "bialternate_matrix",
     "bordered_newton_solve",
     "collocation_matrices",
-    "compute_bifurcation_tangents",
     "compute_floquet_multipliers",
     "compute_initial_tangent",
     "compute_iprc",
-    "compute_iprc_from_collocation",
-    "compute_monodromy_condensation",
-    "compute_monodromy_variational",
     "continue_periodic_orbit",
     "continuation",
     "continuation_codim2",
     "continuation_iprc",
     "continuation_scan",
-    "equidistribute_mesh",
-    "eval_lagrange_basis",
     "evaluate_point_diagnostics",
     "extract_leading_hopf_pair",
-    "gauss_legendre_nodes",
     "initialize_from_hopf",
     "redistribute_mesh",
     "refine_bifurcation_point",
-    "refine_fold_moore_spence",
     "solve_bordered_block",
     "solve_bordered_direct",
     "solve_bordered_system",
-    "solve_coupled_orbit_prc",
     "solve_periodic_orbit",
     "switch_branch",
-    "test_func_branch_point",
-    "test_func_fold",
     "test_func_hopf",
 ]

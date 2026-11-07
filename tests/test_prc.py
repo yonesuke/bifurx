@@ -3,7 +3,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 
 from bifurx.bvp import CollocationProblem, solve_periodic_orbit
-from bifurx.prc import compute_iprc, continuation_iprc, solve_coupled_orbit_prc
+from bifurx.prc import compute_iprc, continuation_iprc
 
 
 def f_stuart_landau(u: jnp.ndarray, p: float = 0.0) -> jnp.ndarray:
@@ -39,7 +39,8 @@ def test_stuart_landau_analytical_iprc():
     t_grid = jnp.linspace(0, 2 * jnp.pi, N, endpoint=False)
     u_init = jnp.stack([jnp.cos(t_grid), jnp.sin(t_grid)], axis=1)
 
-    sol_orbit, res_prc = solve_coupled_orbit_prc(prob, u_init, T_init=6.28, p=0.0, tol=1e-9)
+    sol_orbit = solve_periodic_orbit(prob, u_init, T_init=6.28, p=0.0, tol=1e-9)
+    res_prc = compute_iprc(sol_orbit, p=0.0)
 
     assert bool(sol_orbit.converged)
     assert abs(float(sol_orbit.period) - 2.0 * float(jnp.pi)) < 1e-6

@@ -43,7 +43,7 @@ class IPRCContinuationResult(NamedTuple):
         return int(self.p.shape[0])
 
 
-def find_zero_crossings(signal: jax.Array, time_grid: jax.Array) -> list[float]:
+def _find_zero_crossings(signal: jax.Array, time_grid: jax.Array) -> list[float]:
     """Find linearly interpolated zero crossings of a 1D periodic signal."""
     s0 = jnp.asarray(signal, dtype=jnp.float64)
     t0 = jnp.asarray(time_grid, dtype=jnp.float64)
@@ -67,22 +67,15 @@ def _solve_adjoint_collocation_jax(
     p: float | jax.Array,
     omega_val: jax.Array,
 ) -> jax.Array:
-    """Pure-JAX vectorized linear collocation solve for the periodic adjoint BVP:
-
-    dZ/dt + T * (df/du(u(t)))^T * Z(t) = 0,
-    Z(0) = Z(1),
-    <Z(0), f(u(0))> = omega.
-    """
-    N = problem.num_intervals
-    m = problem.num_gauss_points
-    n = problem.dim
+    """Pure-JAX vectorized linear collocation solve for the periodic adjoint BVP."""
+    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
     D = jnp.asarray(problem.D, dtype=jnp.float64)
     C = jnp.asarray(problem.C, dtype=jnp.float64)
     h = mesh[1:] - mesh[:-1]
     p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
 
     jac_fn = jax.jacobian(lambda u: problem.fn(u, p_val, **problem.kwargs))
-    Ju_all = jax.vmap(jax.vmap(jac_fn))(u_gauss)  # (N, m, n, n)
+    Ju_all = jax.vmap(jax.vmap(jac_fn))(u_gauss)
     f0 = problem.fn(u_mesh[0], p_val, **problem.kwargs)
 
     n_mesh = N * n
@@ -91,18 +84,14 @@ def _solve_adjoint_collocation_jax(
     def adjoint_operator(z_flat: jax.Array) -> jax.Array:
         Z_mesh = z_flat[:n_mesh].reshape((N, n))
         Z_gauss = z_flat[n_mesh:].reshape((N, m, n))
-        Z_full = jnp.concatenate([Z_mesh[:, None, :], Z_gauss], axis=1)  # (N, m + 1, n)
+        Z_full = jnp.concatenate([Z_mesh[:, None, :], Z_gauss], axis=1)
 
-        # 1. Adjoint collocation at Gauss points: dZ/dt + T * Ju^T @ Z_gauss = 0
         dZ_dt = jnp.einsum("mj,Njd->Nmd", D, Z_full) / h[:, None, None]
         jt_z = jnp.einsum("Nmji,Nmj->Nmi", Ju_all, Z_gauss)
         res_coll = (dZ_dt + T * jt_z).ravel()
 
-        # 2. Continuity across interior mesh nodes k = 0 .. N - 2
-        Z_end = jnp.einsum("j,Njd->Nd", C, Z_full)  # (N, n)
+        Z_end = jnp.einsum("j,Njd->Nd", C, Z_full)
         res_cont = (Z_mesh[1:] - Z_end[:-1]).ravel()
-
-        # 3. Periodic boundary (first n - 1 components) + phase normalization <f(u0), Z(0)> = omega
         res_bc = (Z_mesh[0, : n - 1] - Z_end[N - 1, : n - 1]).ravel()
         res_norm = jnp.atleast_1d(jnp.dot(f0, Z_mesh[0]))
 
@@ -110,51 +99,26 @@ def _solve_adjoint_collocation_jax(
 
     L = jax.jacobian(adjoint_operator)(jnp.zeros(dim_z, dtype=jnp.float64))
     rhs = jnp.zeros(dim_z, dtype=jnp.float64).at[-1].set(omega_val)
-    Z_sol = jnp.linalg.solve(L, rhs)
-    return Z_sol[:n_mesh].reshape((N, n))
+    return jnp.linalg.solve(L, rhs)[:n_mesh].reshape((N, n))
 
 
-def compute_iprc_from_collocation(
-    sol: PeriodicOrbitResult,
-    p: float | jax.Array = 0.0,
-    omega_target: float | jax.Array | None = None,
+def _build_iprc_result(
+    theta_grid: jax.Array,
+    orbit: jax.Array,
+    Z: jax.Array,
+    period: jax.Array,
+    omega: jax.Array,
 ) -> IPRCResult:
-    """Compute high-order infinitesimal Phase Response Curve Z(t) directly on Gauss collocation BVP.
-
-    Solves the periodic adjoint BVP:
-        dZ/dt + T * (df/du(u(t)))^T * Z(t) = 0,
-        Z(0) = Z(1),
-        <Z(0), f(u(0))> = omega = 2*pi / T.
-    """
-    problem = sol.problem
-    n = problem.dim
-    T = jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64))
-    mesh = jnp.asarray(sol.mesh, dtype=jnp.float64)
-    u_gauss = jnp.asarray(sol.u_gauss, dtype=jnp.float64)
-    u_mesh = jnp.asarray(sol.u_mesh, dtype=jnp.float64)
-
-    omega_val = (
-        2.0 * jnp.pi / T
-        if omega_target is None
-        else jnp.squeeze(jnp.asarray(omega_target, dtype=jnp.float64))
-    )
-
-    Z_eval = _solve_adjoint_collocation_jax(problem, mesh, u_mesh, u_gauss, T, p, omega_val)
-
-    theta_grid = mesh[:-1]
-    ts_grid = theta_grid * T
-    peak_amps = jnp.max(jnp.abs(Z_eval), axis=0)
-    zero_crossings = [find_zero_crossings(Z_eval[:, comp], theta_grid) for comp in range(n)]
-
+    n = int(Z.shape[1])
     return IPRCResult(
-        ts=ts_grid,
+        ts=theta_grid * period,
         theta=theta_grid,
-        orbit=u_mesh,
-        Z=Z_eval,
-        period=T,
-        omega=omega_val,
-        peak_amplitudes=peak_amps,
-        zero_crossings=zero_crossings,
+        orbit=orbit,
+        Z=Z,
+        period=period,
+        omega=omega,
+        peak_amplitudes=jnp.max(jnp.abs(Z), axis=0),
+        zero_crossings=[_find_zero_crossings(Z[:, comp], theta_grid) for comp in range(n)],
     )
 
 
@@ -166,46 +130,35 @@ def compute_iprc(
     omega_target: float | jax.Array | None = None,
     **kwargs: Any,
 ) -> IPRCResult:
-    """High-level infinitesimal Phase Response Curve (iPRC) solver.
+    """Compute infinitesimal Phase Response Curve Z(t) via Gauss-Legendre collocation adjoint BVP.
 
-    Delegates to the unified Gauss-Legendre collocation adjoint solver whether passed
-    a converged ``PeriodicOrbitResult`` or a raw vector field ``fn`` with ``(u_mesh, T)``.
+    Accepts either a converged ``PeriodicOrbitResult`` or a vector field ``fn`` with ``(u_mesh, T)``.
     """
     if isinstance(sol_or_fn, PeriodicOrbitResult):
-        return compute_iprc_from_collocation(sol_or_fn, p=p, omega_target=omega_target)
+        sol = sol_or_fn
+    else:
+        if u_mesh is None or T is None:
+            msg = "Must provide u_mesh and T when calling compute_iprc with a function."
+            raise ValueError(msg)
+        u_arr = jnp.asarray(u_mesh, dtype=jnp.float64)
+        prob = CollocationProblem(
+            sol_or_fn, dim=int(u_arr.shape[1]), num_intervals=int(u_arr.shape[0]), **kwargs
+        )
+        sol = solve_periodic_orbit(prob, u_mesh_init=u_arr, T_init=T, p=p)
 
-    if u_mesh is None or T is None:
-        msg = "Must provide u_mesh and T when calling compute_iprc with a function."
-        raise ValueError(msg)
+    problem = sol.problem
+    T_arr = jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64))
+    mesh = jnp.asarray(sol.mesh, dtype=jnp.float64)
+    u_gauss = jnp.asarray(sol.u_gauss, dtype=jnp.float64)
+    u_mesh_arr = jnp.asarray(sol.u_mesh, dtype=jnp.float64)
 
-    u_arr = jnp.asarray(u_mesh, dtype=jnp.float64)
-    N, n = int(u_arr.shape[0]), int(u_arr.shape[1])
-    prob = CollocationProblem(sol_or_fn, dim=n, num_intervals=N, **kwargs)
-    sol = solve_periodic_orbit(prob, u_mesh_init=u_arr, T_init=T, p=p)
-    return compute_iprc_from_collocation(sol, p=p, omega_target=omega_target)
-
-
-def solve_coupled_orbit_prc(
-    problem: CollocationProblem,
-    u_mesh_init: ArrayLike,
-    T_init: float | jax.Array,
-    p: float | jax.Array,
-    u_gauss_init: jax.Array | None = None,
-    tol: float = 1e-8,
-    max_iters: int = 25,
-) -> tuple[PeriodicOrbitResult, IPRCResult]:
-    """Solve periodic orbit and iPRC in a coupled fashion."""
-    sol_orbit = solve_periodic_orbit(
-        problem=problem,
-        u_mesh_init=u_mesh_init,
-        T_init=T_init,
-        p=p,
-        u_gauss_init=u_gauss_init,
-        tol=tol,
-        max_iters=max_iters,
+    omega_val = (
+        2.0 * jnp.pi / T_arr
+        if omega_target is None
+        else jnp.squeeze(jnp.asarray(omega_target, dtype=jnp.float64))
     )
-    res_prc = compute_iprc_from_collocation(sol_orbit, p=p)
-    return sol_orbit, res_prc
+    Z_eval = _solve_adjoint_collocation_jax(problem, mesh, u_mesh_arr, u_gauss, T_arr, p, omega_val)
+    return _build_iprc_result(mesh[:-1], u_mesh_arr, Z_eval, T_arr, omega_val)
 
 
 def continuation_iprc(
@@ -220,7 +173,6 @@ def continuation_iprc(
 ) -> IPRCContinuationResult:
     """Perform parameter continuation of the infinitesimal Phase Response Curve (iPRC) via `jax.lax.scan`."""
     N = problem.num_intervals
-    n = problem.dim
     p_values = jnp.linspace(
         jnp.squeeze(jnp.asarray(p_start, dtype=jnp.float64)),
         jnp.squeeze(jnp.asarray(p_end, dtype=jnp.float64)),
@@ -276,22 +228,10 @@ def continuation_iprc(
     omega_kept = omega_all[ok_all]
 
     theta_grid = mesh[:-1]
-    n_kept = int(p_kept.shape[0])
-    results_list: list[IPRCResult] = []
-    for k in range(n_kept):
-        zc = [find_zero_crossings(Z_kept[k, :, comp], theta_grid) for comp in range(n)]
-        results_list.append(
-            IPRCResult(
-                ts=theta_grid * T_kept[k],
-                theta=theta_grid,
-                orbit=orbit_kept[k],
-                Z=Z_kept[k],
-                period=T_kept[k],
-                omega=omega_kept[k],
-                peak_amplitudes=peak_kept[k],
-                zero_crossings=zc,
-            )
-        )
+    results_list = [
+        _build_iprc_result(theta_grid, orbit_kept[k], Z_kept[k], T_kept[k], omega_kept[k])
+        for k in range(int(p_kept.shape[0]))
+    ]
 
     return IPRCContinuationResult(
         p=p_kept,
