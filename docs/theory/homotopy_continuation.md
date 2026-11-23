@@ -174,11 +174,17 @@ Let $\delta_i = \|\Delta z^{(i)}\|_w$ be the weighted step norm at iteration $i$
   which estimates the Kantorovich constant $\omega$ satisfying $\|M(z)^{-1}(M(y) - M(x))\| \le \omega \|y - x\|$.
 
 ### 5.2 Kantorovich Contraction Function & Stopping Criterion
-Define the **Kantorovich contraction function**:
+By Deuflhard's affine-covariant Newton–Mysovskikh theorem (Deuflhard, 2004, Thm. 2.1), if the initial Newton step satisfies $h_0 = \omega \delta_0 < \frac{1}{2}$, Newton's method converges quadratically to a unique root $z^*$ inside the ball $\|z^* - z^{(0)}\|_w \le \frac{1 - \sqrt{1 - 2 h_0}}{\omega}$, with consecutive steps contracting at rate $\theta_i = \delta_i / \delta_{i-1} \le \frac{1}{2} \omega \delta_{i-1} / (1 - \omega \delta_{i-1})$.
 
-$$h(a) = 2a \left(\sqrt{4a^2 + 1} - 2a\right)$$
+Inverting the sharpest quadratic contraction bound for a target contraction factor $a \in (0, \tfrac{1}{2})$ (default $a = 0.125$) yields Timme's **Kantorovich contraction function**:
 
-which relates the desired contraction factor $a \in (0, \tfrac{1}{2})$ (default $a = 0.125$) to the Kantorovich threshold $h(a) \in (0, \tfrac{1}{2})$.
+$$h(a) = 2a \left(\sqrt{4a^2 + 1} - 2a\right) \in \left(0, \tfrac{1}{2}\right)$$
+
+Conversely, a predictor guess $z_{\text{pred}}$ at distance $d_0 = \|z_{\text{pred}} - z^*\|_w$ from the true solution guarantees $\omega \delta_0 \le h(a)$ whenever
+
+$$\omega d_0 \le \sqrt{1 + 2 h(a)} - 1$$
+
+This single inequality connects the corrector's contraction threshold $h(a)$ directly to the adaptive step-size controller in Section 6!
 
 Convergence is accepted in domain space when either:
 1. **Direct step convergence**: $\delta_i \le \varepsilon_{\text{acc}}$, or
@@ -202,7 +208,7 @@ From the converged solution $z_{\text{corr}}$ and predicted point $z_{\text{pred
 
 $$e_{\text{loc}} = \frac{\|z_{\text{pred}} - z_{\text{corr}}\|_w}{|\Delta s|^q}$$
 
-Extrapolating the curvature estimate $\hat{\omega} = \operatorname{clip}(\omega_k + 2(\omega_k - \omega_{k-1}), \; \omega_k, \; 8\omega_k)$, the optimal step size targeting contraction $h(a_{\text{eff}})$ is:
+Extrapolating the curvature estimate $\hat{\omega} = \operatorname{clip}(\omega_k + 2(\omega_k - \omega_{k-1}), \; \omega_k, \; 8\omega_k)$ and substituting the asymptotic predictor error $d_0 \approx e_{\text{loc}} |\Delta s|^q$ directly into the Kantorovich basin condition $\hat{\omega} d_0 \le \sqrt{1 + 2 h(a_{\text{eff}})} - 1$ (from Section 5.2) yields the optimal step size targeting contraction $h(a_{\text{eff}})$:
 
 $$\Delta s_{\text{err}} = \frac{1}{\beta_{\omega_p}} \left( \frac{\sqrt{1 + 2 h(a_{\text{eff}})} - 1}{\hat{\omega} \, e_{\text{loc}}} \right)^{1/q}$$
 
@@ -239,6 +245,25 @@ Three functional hooks allow arbitrary mathematical problems to plug into `track
 - **`step_observer_fn(u, p, tau, Ju, Jp) -> obs`**: Computes diagnostics along the curve inside the `lax.scan` loop (such as equilibrium eigenvalues, codim-1 test functions, or Floquet multipliers).
 
 In the next section—[Applying Homotopy Continuation to Dynamical Systems](dynamical_systems.md)—we show how every dynamical-systems analysis in `bifurx` is formulated as an instance of this general path-tracking engine.
+
+---
+
+## 8. Differentiable Programming Design in JAX
+
+Why rebuild classical continuation software like AUTO-07P on top of JAX? Beyond GPU/XLA compilation, two mathematical and systems principles unify the entire codebase:
+
+![Differentiable programming patterns in bifurx: tensor-free nested JVPs and static-shape XLA loops](figures/jax_autodiff_patterns.png)
+
+### 8.1 Tensor-Free Higher-Order Directional Derivatives via Nested `jax.jvp`
+Classical bifurcation theory requires derivatives up to third order: $D^2 H[z_1, z_1]$ and $D^3 H[z_1, z_1, z_1]$ for Padé (2,1) predictors, $D^2 F[\xi_i, \xi_j]$ for the Algebraic Bifurcation Equation (ABE), $D^2_{uu} F[v, v]$ for Cusp detection, and both $B(q, q)$ and $C(q, q, \bar{q})$ for Kuznetsov's first Lyapunov coefficient $l_1$.
+
+Materializing full $k$-th order derivative tensors requires $\mathcal{O}(n^{k+1})$ memory and work—untenable for high-dimensional discretizations. However, every algorithm in `bifurx` needs only **directional derivatives** along a handful of known vectors $(v_1, \dots, v_k)$. By nesting forward-mode Jacobian-vector products (`jax.jvp`), computing $D^k F(z)[v_1, \dots, v_k]$ costs **$\mathcal{O}(1)$ residual evaluations and $\mathcal{O}(n)$ memory** regardless of state dimension $n$, with exact machine-precision derivatives and zero finite-difference step-size tuning.
+
+### 8.2 Static-Shape XLA Compilation & PyTree Composability
+XLA compilation requires static array shapes across loop iterations. `bifurx` reconciles this with adaptive numerical continuation through three patterns:
+- **Masked fixed-length `jax.lax.scan`**: `track_arclength_scan` executes a fixed `n_steps` scan with an `is_active` boolean carry flag. When `p_min`/`p_max` bounds are crossed or a step fails at `ds_min`, `is_active` flips to `False` and `jnp.where` freezes the carry state without Python control-flow overhead; rejected adaptive steps shrink `ds` and retry on the next scan iteration.
+- **Outer chunking only for topology changes**: Operations that genuinely alter the discretization grid (such as `redistribute_mesh` in `continue_periodic_orbit`) run between compiled `lax.scan` chunks, preserving XLA fusion across all inner steps.
+- **Native PyTrees (`BifurcationProblem`, `CollocationProblem`, `ContinuationOptions`)**: All problems and options register as JAX PyTrees separating dynamic numerical leaves from static callables/dimensions, allowing callers to compose continuation routines with `jax.jit` and `jax.vmap` (e.g., sweeping parameters or computing iPRCs in parallel across an entire branch).
 
 ---
 
