@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from bifurx.bifurcations import (
+    compute_first_lyapunov_coefficient,
     evaluate_point_diagnostics,
     refine_bifurcation_point,
 )
@@ -392,6 +393,12 @@ def continuation(
                     Ju_ref = problem.jacobian_u(u_ref, p_ref)
                     details["Ju"] = Ju_ref
                     details["min_eig"] = float(jnp.min(jnp.abs(jnp.linalg.eigvals(Ju_ref))))
+                elif bif_type == "HB":
+                    l1 = compute_first_lyapunov_coefficient(problem, u_ref, p_ref)
+                    if bool(jnp.isfinite(l1)):
+                        l1_val = float(l1)
+                        details["first_lyapunov"] = l1_val
+                        details["hopf_type"] = "supercritical" if l1_val < 0.0 else "subcritical"
                 bif_points.append(
                     BifurcationPoint(
                         bif_type=bif_type,

@@ -1,6 +1,12 @@
+import jax
 import jax.numpy as jnp
+import pytest
 
-from bifurx.bifurcations import refine_bifurcation_point, switch_branch
+from bifurx.bifurcations import (
+    compute_first_lyapunov_coefficient,
+    refine_bifurcation_point,
+    switch_branch,
+)
 from bifurx.continuation import continuation
 from bifurx.problem import BifurcationProblem
 
@@ -403,3 +409,128 @@ def test_continuation_pade21_predictor():
     assert abs(lps[1].p - 0.08893185) < 1e-4
     assert len(hbs) >= 1
     assert abs(hbs[0].p - 0.1308998) < 1e-3
+
+
+def test_hopf_direct_refinement_curved_branch_large_step():
+    """Verify HB direct augmented Newton refinement recovers exact (u*, p*) on curved branches."""
+
+    def f_curved_hopf(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:
+        x, y, z = u[0], u[1], u[2]
+        e1 = x - p**2
+        e3 = z - p
+        return jnp.array(
+            [
+                (p - 1.0) * e1 - 2.0 * y - e1**2,
+                2.0 * e1 + (p - 1.0) * y + e1 * e3,
+                -e3 + e1**2 + y**2,
+            ]
+        )
+
+    prob = BifurcationProblem(f_curved_hopf, u0=[0.36, 0.0, 0.6], p0=0.6)
+    p_a, p_b = 0.6, 1.3
+    u_a = jnp.array([p_a**2, 0.0, p_a], dtype=jnp.float64)
+    u_b = jnp.array([p_b**2, 0.0, p_b], dtype=jnp.float64)
+    tau_a = jnp.array([2.0 * p_a, 0.0, 1.0, 1.0], dtype=jnp.float64)
+    tau_a = tau_a / jnp.linalg.norm(tau_a)
+    tau_b = jnp.array([2.0 * p_b, 0.0, 1.0, 1.0], dtype=jnp.float64)
+    tau_b = tau_b / jnp.linalg.norm(tau_b)
+
+    u_ref, p_ref = refine_bifurcation_point(prob, u_a, p_a, tau_a, u_b, p_b, tau_b, bif_type="HB")
+    assert abs(float(p_ref) - 1.0) < 1e-10
+    assert jnp.allclose(u_ref, jnp.array([1.0, 0.0, 1.0]), atol=1e-10)
+
+
+def test_bp_on_curve_refinement_curved_branch():
+    """Verify BP on-curve projection refines curved branch points accurately on large brackets."""
+
+    def f_curved_bp(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        return jnp.array([x - p**2 - y**2, y * (x + p - 2.0 - y)])
+
+    prob = BifurcationProblem(f_curved_bp, u0=[0.36, 0.0], p0=0.6)
+    p_a, p_b = 0.6, 1.25
+    u_a = jnp.array([p_a**2, 0.0], dtype=jnp.float64)
+    u_b = jnp.array([p_b**2, 0.0], dtype=jnp.float64)
+    tau_a = jnp.array([2.0 * p_a, 0.0, 1.0], dtype=jnp.float64)
+    tau_a = tau_a / jnp.linalg.norm(tau_a)
+    tau_b = jnp.array([2.0 * p_b, 0.0, 1.0], dtype=jnp.float64)
+    tau_b = tau_b / jnp.linalg.norm(tau_b)
+
+    u_ref, p_ref = refine_bifurcation_point(prob, u_a, p_a, tau_a, u_b, p_b, tau_b, bif_type="BP")
+    assert abs(float(p_ref) - 1.0) < 1e-8
+    assert jnp.allclose(u_ref, jnp.array([1.0, 0.0]), atol=1e-8)
+
+
+def test_first_lyapunov_coefficient_analytical_and_jit():
+    """Verify Kuznetsov first Lyapunov coefficient l_1 against analytical cases and jax.jit."""
+
+    # 1. Supercritical Stuart-Landau (sigma = -1, omega = 2 -> l_1 = 2*sigma/omega = -1.0)
+    def sl_super(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        return jnp.array([p * x - 2.0 * y - x * r2, 2.0 * x + p * y - y * r2])
+
+    l1_super = compute_first_lyapunov_coefficient(sl_super, jnp.zeros(2), 0.0)
+    assert float(l1_super) == pytest.approx(-1.0, rel=1e-10)
+
+    # 2. Subcritical Stuart-Landau (sigma = +1.5, omega = 1 -> l_1 = 3.0)
+    def sl_sub(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        return jnp.array([p * x - y + 1.5 * x * r2, x + p * y + 1.5 * y * r2])
+
+    l1_sub = compute_first_lyapunov_coefficient(sl_sub, jnp.zeros(2), 0.0)
+    assert float(l1_sub) == pytest.approx(3.0, rel=1e-10)
+
+    # 3. 3D quadratic center-manifold coupling (tests w_11 = A^{-1} B(q, qbar) -> l_1 = 2*gamma = -1.0)
+    def f_3d_quad(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:
+        x, y, z = u[0], u[1], u[2]
+        return jnp.array(
+            [
+                p * x - y - 0.5 * x * z,
+                x + p * y - 0.5 * y * z,
+                -z + x * x + y * y,
+            ]
+        )
+
+    l1_3d = compute_first_lyapunov_coefficient(f_3d_quad, jnp.zeros(3), 0.0)
+    assert float(l1_3d) == pytest.approx(-1.0, rel=1e-10)
+
+    # 4. 2D quadratic oscillator (tests both w_11 and w_20 = (2i*omega*I - A)^{-1} B(q, q))
+    def f_quad_2d(u: jnp.ndarray, _p: float | jnp.ndarray) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        return jnp.array([y + x * x, -x - x * x])
+
+    l1_q2 = compute_first_lyapunov_coefficient(f_quad_2d, jnp.zeros(2), 0.0)
+    assert float(l1_q2) == pytest.approx(-0.5, rel=1e-10)
+
+    # 5. Brusselator (a=1, b_H=2 -> supercritical l_1 < 0) and jax.jit consistency
+    def f_bruss(u: jnp.ndarray, b: float | jnp.ndarray) -> jnp.ndarray:
+        a = 1.0
+        x, y = u[0], u[1]
+        return jnp.array([a - (b + 1.0) * x + x * x * y, b * x - x * x * y])
+
+    prob_bruss = BifurcationProblem(f_bruss, u0=[1.0, 2.0], p0=2.0)
+    l1_eager = compute_first_lyapunov_coefficient(prob_bruss, jnp.array([1.0, 2.0]), 2.0)
+    l1_jit = jax.jit(lambda u_h, p_h: compute_first_lyapunov_coefficient(prob_bruss, u_h, p_h))(
+        jnp.array([1.0, 2.0]), jnp.array(2.0)
+    )
+    assert bool(jnp.isfinite(l1_eager))
+    assert float(l1_eager) < 0.0
+    assert float(l1_jit) == pytest.approx(float(l1_eager), rel=1e-12)
+
+    # 6. AB reaction continuation attaches first Lyapunov metadata on refined HB
+    def f_ab(u: jnp.ndarray, p1: float | jnp.ndarray) -> jnp.ndarray:
+        u1, u2 = u[0], u[1]
+        e = jnp.exp(u2)
+        return jnp.array([-u1 + p1 * (1.0 - u1) * e, -u2 + p1 * 14.0 * (1.0 - u1) * e - 2.0 * u2])
+
+    res_ab = continuation(
+        BifurcationProblem(f_ab, u0=[0.0, 0.0], p0=0.0), ds=0.03, ds_max=0.04, max_steps=140
+    )
+    hbs = res_ab.get_bifurcations("HB")
+    assert len(hbs) >= 1
+    assert abs(hbs[0].p - 0.1308998) < 1e-6
+    assert "first_lyapunov" in hbs[0].details
+    assert hbs[0].details["first_lyapunov"] < 0.0
+    assert hbs[0].details["hopf_type"] == "supercritical"

@@ -8,7 +8,8 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from bifurx.bifurcations import (
-    extract_leading_hopf_pair,
+    canonical_hopf_eigenvector,
+    hopf_augmented_residual,
     initial_null_vector,
     moore_spence_fold_residual,
 )
@@ -105,13 +106,7 @@ def continuation_codim2(
 
         else:
             Ju0 = jac_u_fn(u0, p1_0, p2_0)
-            eigs, vecs = jnp.linalg.eig(Ju0)
-            _, leading_real, omega0 = extract_leading_hopf_pair(Ju0, eigs=eigs)
-            target_eig = leading_real + 1j * omega0
-            vec0 = vecs[:, jnp.argmin(jnp.abs(eigs - target_eig))]
-            v_r0, v_i0 = jnp.real(vec0), jnp.imag(vec0)
-            norm_v = jnp.sqrt(jnp.dot(v_r0, v_r0) + jnp.dot(v_i0, v_i0))
-            v_r0, v_i0 = v_r0 / norm_v, v_i0 / norm_v
+            _, v_r0, v_i0, omega0 = canonical_hopf_eigenvector(Ju0)
             l_R = v_r0
             aux0 = jnp.concatenate([v_r0, v_i0, jnp.atleast_1d(omega0)])
 
@@ -119,16 +114,13 @@ def continuation_codim2(
                 u_v: jax.Array, p1_v: jax.Array, p2_v: jax.Array, aux_v: jax.Array
             ) -> jax.Array:
                 vr_v, vi_v, om_v = aux_v[:n], aux_v[n : 2 * n], aux_v[2 * n]
-                f_val = fn(u_v, p1_v, p2_v, **kwargs)
-                Ju = jac_u_fn(u_v, p1_v, p2_v)
-                return jnp.concatenate(
-                    [
-                        f_val,
-                        Ju @ vr_v + om_v * vi_v,
-                        Ju @ vi_v - om_v * vr_v,
-                        jnp.atleast_1d(jnp.dot(l_R, vr_v) - 1.0),
-                        jnp.atleast_1d(jnp.dot(l_R, vi_v)),
-                    ]
+                return hopf_augmented_residual(
+                    fn(u_v, p1_v, p2_v, **kwargs),
+                    jac_u_fn(u_v, p1_v, p2_v),
+                    vr_v,
+                    vi_v,
+                    om_v,
+                    l_R,
                 )
 
     else:

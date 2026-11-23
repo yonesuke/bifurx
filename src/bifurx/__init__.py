@@ -15,6 +15,7 @@ if not getattr(jax.config, "jax_enable_x64", False):
     _logger.info("bifurx enabled jax_enable_x64=True for double precision continuation.")
 
 from bifurx.bifurcations import (
+    compute_first_lyapunov_coefficient,
     evaluate_point_diagnostics,
     extract_leading_hopf_pair,
     refine_bifurcation_point,
@@ -87,6 +88,7 @@ __all__ = [
     "WeightedNormOptions",
     "bordered_newton_solve",
     "collocation_matrices",
+    "compute_first_lyapunov_coefficient",
     "compute_floquet_multipliers",
     "compute_initial_tangent",
     "compute_iprc",
