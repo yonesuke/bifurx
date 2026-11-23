@@ -847,3 +847,66 @@ def test_branch_from_hopf_arclength_supercritical_and_subcritical():
     assert len(branch_bi) >= 4
     assert float(branch_bi[-1].p) < float(sol_bi.p) - 0.03  # type: ignore[arg-type]
     assert bool(branch_bi[-1].is_stable)
+
+
+def test_rotational_periodic_orbit_period_shift():
+    """Verify period_shift supports rotational periodic orbits on cylindrical phase spaces."""
+
+    # 1. Adler phase oscillator: dtheta/dt = omega - sin(theta), exact T = 2*pi / sqrt(omega^2 - 1)
+    def f_adler(u: jnp.ndarray, omega: float) -> jnp.ndarray:
+        return jnp.array([omega - jnp.sin(u[0])])
+
+    N = 20
+    with pytest.raises(ValueError, match="period_shift"):
+        CollocationProblem(f_adler, dim=1, num_intervals=N, period_shift=[0.0, 1.0])
+
+    prob_adler = CollocationProblem(
+        f_adler, dim=1, num_intervals=N, num_gauss_points=4, period_shift=[2.0 * float(jnp.pi)]
+    )
+    t_grid = jnp.linspace(0.0, 1.0, N, endpoint=False)
+    u_init = (2.0 * jnp.pi * t_grid)[:, None]
+    omega0 = 1.5
+    T_exact = 2.0 * float(jnp.pi) / float(jnp.sqrt(omega0**2 - 1.0))
+    sol = solve_periodic_orbit(prob_adler, u_init, T_init=T_exact, p=omega0, tol=1e-9)
+    assert bool(sol.converged)
+    assert abs(float(sol.period) - T_exact) < 1e-8
+    assert jnp.allclose(sol.evaluate(1.0) - sol.evaluate(0.0), jnp.array([2.0 * jnp.pi]), atol=1e-7)
+
+    # 2. Martens et al. (2009) original (q, psi) ODE directly with period_shift = [0, 2*pi]
+    def f_bimodal_qpsi(u: jnp.ndarray, delta: float) -> jnp.ndarray:
+        q, psi = u[0], u[1]
+        w0 = 1.4
+        dq = q * (1.0 - delta - q + (1.0 - q) * jnp.cos(psi))
+        dpsi = w0 - (1.0 + q) * jnp.sin(psi)
+        return jnp.array([dq, dpsi])
+
+    prob_qp = CollocationProblem(
+        f_bimodal_qpsi,
+        dim=2,
+        num_intervals=25,
+        num_gauss_points=4,
+        period_shift=[0.0, 2.0 * float(jnp.pi)],
+    )
+    t_qp = jnp.linspace(0.0, 1.0, 25, endpoint=False)
+    u_qp_init = jnp.stack([jnp.full_like(t_qp, 0.15), 2.0 * jnp.pi * t_qp], axis=1)
+    sol_qp = solve_periodic_orbit(prob_qp, u_qp_init, T_init=6.0, p=0.85, tol=1e-8)
+    assert bool(sol_qp.converged)
+    assert jnp.allclose(
+        sol_qp.evaluate(1.0) - sol_qp.evaluate(0.0), jnp.array([0.0, 2.0 * jnp.pi]), atol=1e-7
+    )
+
+    branch_qp = continue_periodic_orbit(
+        prob_qp,
+        initial_orbit=sol_qp,
+        p_start=0.85,
+        p_end=0.72,
+        dp=0.03,
+        max_steps=10,
+        param_mode="arclength",
+        compute_floquet=True,
+        remesh_interval=5,
+    )
+    assert len(branch_qp) >= 4
+    assert all(bool(o.converged) for o in branch_qp)
+    assert bool(branch_qp[-1].is_stable)
+    assert float(branch_qp[-1].period) > float(sol_qp.period)
