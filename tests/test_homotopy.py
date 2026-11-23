@@ -5,7 +5,9 @@ import jax.numpy as jnp
 import pytest
 
 from bifurx.homotopy import (
+    BlockBorderedFactorization,
     BorderedFactorization,
+    BorderedOperatorSolver,
     BorderedSolution,
     CorrectorResult,
     TrackerParameters,
@@ -17,14 +19,17 @@ from bifurx.homotopy import (
     correct_arclength_step,
     estimate_local_error,
     estimate_pade_trust_region,
+    factor_bordered_block,
     factor_bordered_matrix,
     init_weighted_norm,
     kantorovich_h,
+    make_gmres_bordered_solver,
     pade21_predict,
     solve_bordered_block,
     solve_bordered_direct,
     solve_bordered_system,
     solve_factored_bordered,
+    solve_factored_bordered_block,
     tangent_predict,
     track_arclength_scan,
     update_step_size,
@@ -622,3 +627,154 @@ def test_corrector_kantorovich_omega_and_singular_rejection() -> None:
     )
     assert bool(res_consistent.converged)
     assert float(res_consistent.residual_norm) < 1e-8
+
+
+def test_bordered_operator_solver_gmres_and_lu_reuse() -> None:
+    """Verify matrix-free GMRES BorderedOperatorSolver and LU factorization reuse in corrector."""
+    # 1. BlockBorderedFactorization matches dense direct solve
+    u_ab0 = jnp.array([0.0, 0.0], dtype=jnp.float64)
+    p_ab0 = jnp.array(0.0, dtype=jnp.float64)
+    tau_ab = compute_tangent(_ab_ju, _ab_jp, u_ab0, p_ab0)
+    fac_blk = factor_bordered_block(
+        _ab_ju(u_ab0, p_ab0), _ab_jp(u_ab0, p_ab0), tau_ab[:2], tau_ab[2]
+    )
+    assert isinstance(fac_blk, BlockBorderedFactorization)
+    sol_blk = solve_factored_bordered_block(fac_blk, jnp.array([0.2, -0.3]), 0.5)
+    sol_dir = solve_bordered_direct(
+        _ab_ju(u_ab0, p_ab0),
+        _ab_jp(u_ab0, p_ab0),
+        tau_ab[:2],
+        tau_ab[2],
+        jnp.array([0.2, -0.3]),
+        0.5,
+    )
+    assert jnp.allclose(sol_blk.z, sol_dir.z, atol=1e-12)
+
+    # 2. Matrix-free GMRES BorderedOperatorSolver for tangent, pade21 taylor3, and scan (jit + vmap)
+    gmres_solver = make_gmres_bordered_solver(_ab_fn, tol=1e-11)
+    tau_gmres = compute_tangent(u0=u_ab0, p0=p_ab0, bordered_solver=gmres_solver)
+    assert jnp.allclose(tau_gmres, tau_ab, atol=1e-8)
+
+    z2_d, z3_d, tr_d = compute_arclength_taylor3(
+        _ab_fn, u_ab0, p_ab0, tau_ab, _ab_ju(u_ab0, p_ab0), _ab_jp(u_ab0, p_ab0)
+    )
+    z2_g, z3_g, tr_g = compute_arclength_taylor3(
+        _ab_fn, u_ab0, p_ab0, tau_gmres, bordered_solver=gmres_solver
+    )
+    assert jnp.allclose(z2_g, z2_d, atol=1e-7)
+    assert jnp.allclose(z3_g, z3_d, atol=1e-7)
+    assert float(tr_g) == pytest.approx(float(tr_d), rel=1e-6)
+
+    res_dense = jax.jit(
+        lambda: track_arclength_scan(
+            _ab_fn,
+            _ab_ju,
+            _ab_jp,
+            u_ab0,
+            p_ab0,
+            tau_ab,
+            ds=0.03,
+            ds_max=0.06,
+            n_steps=40,
+            adaptive_step=True,
+            predictor="pade21",
+        )
+    )()
+    res_gmres = jax.jit(
+        lambda: track_arclength_scan(
+            _ab_fn,
+            u0=u_ab0,
+            p0=p_ab0,
+            tau0=tau_gmres,
+            ds=0.03,
+            ds_max=0.06,
+            n_steps=40,
+            adaptive_step=True,
+            predictor="pade21",
+            bordered_solver=gmres_solver,
+        )
+    )()
+    assert bool(jnp.all(res_gmres.converged))
+    assert jnp.allclose(res_gmres.u, res_dense.u, atol=1e-7)
+    assert jnp.allclose(res_gmres.p, res_dense.p, atol=1e-7)
+
+    # Also verify vmap with GMRES bordered solver
+    p_batch = jnp.linspace(0.5, 2.0, 6)
+    u_batch = jnp.sqrt(p_batch)[:, None]
+    fold_gmres = make_gmres_bordered_solver(_fold_fn, tol=1e-11)
+
+    def _run_gmres_fold(u_s: jax.Array, p_s: jax.Array) -> TrackScanResult:
+        tau_s = compute_tangent(u0=u_s, p0=p_s, direction=-1.0, bordered_solver=fold_gmres)
+        return track_arclength_scan(
+            _fold_fn,
+            u0=u_s,
+            p0=p_s,
+            tau0=tau_s,
+            ds=0.04,
+            n_steps=15,
+            adaptive_step=True,
+            predictor="pade21",
+            bordered_solver=fold_gmres,
+        )
+
+    batch_g = jax.jit(jax.vmap(_run_gmres_fold))(u_batch, p_batch)
+    assert bool(jnp.all(batch_g.converged))
+    assert jnp.allclose(batch_g.u[:, :, 0] ** 2, batch_g.p, atol=1e-7)
+
+    # 3. Verify Kantorovich _do_final_check reuses factorization without re-factorizing (#25 note)
+    counts = {"factor": 0, "solve": 0}
+
+    def counting_factor(
+        u: jax.Array, p: jax.Array, c: jax.Array, d: jax.Array
+    ) -> BorderedFactorization:
+        counts["factor"] += 1
+        return factor_bordered_matrix(_fold_ju(u, p), _fold_jp(u, p), c, d)
+
+    def counting_solve(fac: BorderedFactorization, f: jax.Array, g: jax.Array) -> BorderedSolution:
+        counts["solve"] += 1
+        return solve_factored_bordered(fac, f, g)
+
+    counting_solver = BorderedOperatorSolver(factor=counting_factor, solve=counting_solve)
+    u_prev = jnp.array([1.0], dtype=jnp.float64)
+    p_prev = jnp.array(1.0, dtype=jnp.float64)
+    tau = compute_tangent(_fold_ju, _fold_jp, u_prev, p_prev, direction=1.0)
+    ds = jnp.array(0.05, dtype=jnp.float64)
+    u_tan, p_tan = tangent_predict(u_prev, p_prev, tau, ds)
+    res_exact = correct_arclength_step(
+        _fold_fn,
+        _fold_ju,
+        _fold_jp,
+        u_tan,
+        p_tan,
+        u_prev,
+        p_prev,
+        tau,
+        ds,
+        tol=1e-14,
+        step_tol=1e-14,
+    )
+    u_kant = res_exact.u + jnp.array([5e-5], dtype=jnp.float64)
+    p_kant = res_exact.p
+    w_kant = init_weighted_norm(jnp.concatenate([u_kant, jnp.atleast_1d(p_kant)]))
+
+    with jax.disable_jit():
+        res_reuse = correct_arclength_step(
+            _fold_fn,
+            u_init=u_kant,
+            p_init=p_kant,
+            u_prev=u_prev,
+            p_prev=p_prev,
+            tau_prev=tau,
+            ds=ds,
+            weights=w_kant,
+            omega_init=2.0,
+            first_step=False,
+            tol=1e-8,
+            step_tol=1e-8,
+            enforce_contraction=True,
+            bordered_solver=counting_solver,
+        )
+    assert bool(res_reuse.converged)
+    assert int(res_reuse.iterations) == 1
+    assert counts["factor"] == 1
+    assert counts["solve"] == 2

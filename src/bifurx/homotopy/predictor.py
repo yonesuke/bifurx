@@ -5,7 +5,11 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 
-from bifurx.homotopy.bordered import factor_bordered_matrix, solve_factored_bordered
+from bifurx.homotopy.bordered import (
+    BorderedOperatorSolver,
+    factor_bordered_matrix,
+    solve_factored_bordered,
+)
 from bifurx.homotopy.norm import weighted_distance, weighted_inf_norm
 
 
@@ -49,11 +53,12 @@ def compute_arclength_taylor3(
     u: jax.Array,
     p: jax.Array,
     tau: jax.Array,
-    Ju: jax.Array,
-    Jp: jax.Array,
+    Ju: jax.Array | None = None,
+    Jp: jax.Array | None = None,
     border_c: jax.Array | None = None,
     border_d: float | jax.Array | None = None,
     weights: jax.Array | None = None,
+    bordered_solver: BorderedOperatorSolver | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Compute 2nd/3rd arclength Taylor coefficients and Padé trust region.
 
@@ -61,6 +66,10 @@ def compute_arclength_taylor3(
     `z(s) = z0 + tau * s + z2 * s^2 + z3 * s^3 + O(s^4)` along the curve
     `residual_fn(u, p) = 0`, `<c, u(s) - u0> + d * (p(s) - p0) = s`.
     """
+    if bordered_solver is None and (Ju is None or Jp is None):
+        msg = "Provide Ju and Jp when bordered_solver is None."
+        raise ValueError(msg)
+
     n = u.shape[0]
     z0 = jnp.concatenate([u, jnp.atleast_1d(p)])
     z1 = tau
@@ -85,12 +94,20 @@ def compute_arclength_taylor3(
         (jnp.array(1.0, dtype=jnp.float64),),
     )
 
-    fac = factor_bordered_matrix(Ju, Jp, c_vec, d_val)
-    z2 = solve_factored_bordered(fac, -0.5 * d2_11, 0.0).z
-
-    d2_12 = jax.jvp(lambda z: jax.jvp(G, (z,), (z1,))[1], (z0,), (z2,))[1]
-    rhs3 = -d2_12 - (1.0 / 6.0) * d3_111
-    z3 = solve_factored_bordered(fac, rhs3, 0.0).z
+    zero_g = jnp.array(0.0, dtype=jnp.float64)
+    if bordered_solver is not None:
+        fac_op = bordered_solver.factor(u, jnp.squeeze(p), c_vec, jnp.squeeze(d_val))
+        z2 = bordered_solver.solve(fac_op, -0.5 * d2_11, zero_g).z
+        d2_12 = jax.jvp(lambda z: jax.jvp(G, (z,), (z1,))[1], (z0,), (z2,))[1]
+        rhs3 = -d2_12 - (1.0 / 6.0) * d3_111
+        z3 = bordered_solver.solve(fac_op, rhs3, zero_g).z
+    else:
+        assert Ju is not None and Jp is not None
+        fac = factor_bordered_matrix(Ju, Jp, c_vec, d_val)
+        z2 = solve_factored_bordered(fac, -0.5 * d2_11, 0.0).z
+        d2_12 = jax.jvp(lambda z: jax.jvp(G, (z,), (z1,))[1], (z0,), (z2,))[1]
+        rhs3 = -d2_12 - (1.0 / 6.0) * d3_111
+        z3 = solve_factored_bordered(fac, rhs3, 0.0).z
 
     trust_region = estimate_pade_trust_region(z1, z2, z3, weights=weights)
     return z2, z3, trust_region

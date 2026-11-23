@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import NamedTuple
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -19,6 +20,24 @@ class BorderedSolution(NamedTuple):
     def z(self) -> jax.Array:
         """Concatenated solution vector [x, y]."""
         return jnp.concatenate([self.x.ravel(), jnp.atleast_1d(self.y)])
+
+
+class BorderedOperatorSolver(NamedTuple):
+    """Pluggable factor-and-solve backend for bordered linear systems."""
+
+    factor: Callable[[jax.Array, jax.Array, jax.Array, jax.Array], Any]
+    solve: Callable[[Any, jax.Array, jax.Array], BorderedSolution]
+
+
+class BlockBorderedFactorization(NamedTuple):
+    """Reusable block LU factorization for a bordered system."""
+
+    lu: jax.Array
+    piv: jax.Array
+    v: jax.Array
+    delta: jax.Array
+    c: jax.Array
+    is_valid: jax.Array
 
 
 class BorderedFactorization(NamedTuple):
@@ -170,3 +189,91 @@ def solve_bordered_system(
 
     msg = f"Unknown method: {method}. Choose from 'auto', 'block', or 'direct'."
     raise ValueError(msg)
+
+
+def factor_bordered_block(
+    A: jax.Array,
+    b: jax.Array,
+    c: jax.Array,
+    d: float | jax.Array,
+    rcond: float = 1e-10,
+) -> BlockBorderedFactorization:
+    """Factorize A once for Schur-complement block bordered solves."""
+    b_flat, c_flat = b.ravel(), c.ravel()
+    d_scalar = jnp.squeeze(jnp.asarray(d, dtype=jnp.float64))
+    lu, piv = jax.scipy.linalg.lu_factor(A)
+    v = jax.scipy.linalg.lu_solve((lu, piv), b_flat)
+    delta = d_scalar - jnp.dot(c_flat, v)
+    is_valid = (
+        jnp.all(jnp.isfinite(lu))
+        & jnp.all(jnp.isfinite(v))
+        & (jnp.abs(delta) > rcond * (1.0 + jnp.abs(d_scalar)))
+    )
+    return BlockBorderedFactorization(lu=lu, piv=piv, v=v, delta=delta, c=c_flat, is_valid=is_valid)
+
+
+def solve_factored_bordered_block(
+    fac: BlockBorderedFactorization,
+    f: jax.Array,
+    g: float | jax.Array,
+) -> BorderedSolution:
+    """Solve [[A, b], [c^T, d]] [x, y]^T = [f, g]^T reusing `BlockBorderedFactorization`."""
+    w = jax.scipy.linalg.lu_solve((fac.lu, fac.piv), f.ravel())
+    delta_safe = jnp.where(jnp.abs(fac.delta) > 1e-30, fac.delta, 1.0)
+    y = jnp.where(
+        fac.is_valid,
+        (jnp.squeeze(jnp.asarray(g, dtype=jnp.float64)) - jnp.dot(fac.c, w)) / delta_safe,
+        jnp.nan,
+    )
+    return BorderedSolution(x=w - y * fac.v, y=jnp.squeeze(y))
+
+
+def make_gmres_bordered_solver(
+    residual_fn: Callable[[jax.Array, jax.Array], jax.Array],
+    *,
+    tol: float = 1e-10,
+    maxiter: int | None = None,
+    restart: int = 20,
+) -> BorderedOperatorSolver:
+    """Build a matrix-free GMRES `BorderedOperatorSolver` backed by forward-mode JVPs."""
+
+    def factor(u: jax.Array, p: jax.Array, c: jax.Array, d: jax.Array) -> tuple[jax.Array, ...]:
+        return (
+            jnp.asarray(u, dtype=jnp.float64),
+            jnp.squeeze(jnp.asarray(p, dtype=jnp.float64)),
+            jnp.asarray(c, dtype=jnp.float64).ravel(),
+            jnp.squeeze(jnp.asarray(d, dtype=jnp.float64)),
+        )
+
+    def solve(fac: tuple[jax.Array, ...], f: jax.Array, g: jax.Array) -> BorderedSolution:
+        u_arr, p_arr, c_arr, d_arr = fac
+        n = u_arr.shape[0]
+        rhs = jnp.concatenate(
+            [
+                jnp.atleast_1d(jnp.asarray(f, dtype=jnp.float64)).ravel(),
+                jnp.atleast_1d(jnp.squeeze(jnp.asarray(g, dtype=jnp.float64))),
+            ]
+        )
+
+        def matvec(z: jax.Array) -> jax.Array:
+            dz_u, dz_p = z[:n], jnp.squeeze(z[n])
+            _, jvp_f = jax.jvp(residual_fn, (u_arr, p_arr), (dz_u, dz_p))
+            jvp_flat = jnp.atleast_1d(jnp.asarray(jvp_f, dtype=jnp.float64)).ravel()
+            arc = jnp.dot(c_arr, dz_u) + d_arr * dz_p
+            return jnp.concatenate([jvp_flat, jnp.atleast_1d(arc)])
+
+        b_norm = jnp.linalg.norm(rhs)
+        has_rhs = b_norm > 0.0
+        rhs_unit = jnp.where(has_rhs, rhs / jnp.where(has_rhs, b_norm, 1.0), rhs)
+        z_unit, _ = jax.scipy.sparse.linalg.gmres(
+            matvec,
+            rhs_unit,
+            tol=tol,
+            atol=0.0,
+            restart=min(restart, n + 1),
+            maxiter=maxiter,
+        )
+        z_sol = jnp.where(has_rhs, b_norm * z_unit, jnp.zeros_like(rhs))
+        return BorderedSolution(x=z_sol[:n], y=jnp.squeeze(z_sol[n]))
+
+    return BorderedOperatorSolver(factor=factor, solve=solve)

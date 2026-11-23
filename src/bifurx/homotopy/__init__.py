@@ -1,14 +1,19 @@
 """bifurx.homotopy: Standalone pure-JAX homotopy & arclength path-tracking core."""
 
 from bifurx.homotopy.bordered import (
+    BlockBorderedFactorization,
     BorderedFactorization,
+    BorderedOperatorSolver,
     BorderedSolution,
     build_bordered_matrix,
+    factor_bordered_block,
     factor_bordered_matrix,
+    make_gmres_bordered_solver,
     solve_bordered_block,
     solve_bordered_direct,
     solve_bordered_system,
     solve_factored_bordered,
+    solve_factored_bordered_block,
 )
 from bifurx.homotopy.corrector import CorrectorResult, correct_arclength_step
 from bifurx.homotopy.norm import (
@@ -37,7 +42,9 @@ from bifurx.homotopy.tracker import (
 )
 
 __all__ = [
+    "BlockBorderedFactorization",
     "BorderedFactorization",
+    "BorderedOperatorSolver",
     "BorderedSolution",
     "CorrectorResult",
     "TrackScanResult",
@@ -49,14 +56,17 @@ __all__ = [
     "correct_arclength_step",
     "estimate_local_error",
     "estimate_pade_trust_region",
+    "factor_bordered_block",
     "factor_bordered_matrix",
     "init_weighted_norm",
     "kantorovich_h",
+    "make_gmres_bordered_solver",
     "pade21_predict",
     "solve_bordered_block",
     "solve_bordered_direct",
     "solve_bordered_system",
     "solve_factored_bordered",
+    "solve_factored_bordered_block",
     "tangent_predict",
     "track_arclength_scan",
     "update_step_size",

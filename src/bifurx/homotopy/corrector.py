@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-from bifurx.homotopy.bordered import solve_bordered_system
+from bifurx.homotopy.bordered import (
+    BlockBorderedFactorization,
+    BorderedFactorization,
+    BorderedOperatorSolver,
+    factor_bordered_block,
+    factor_bordered_matrix,
+    solve_factored_bordered,
+    solve_factored_bordered_block,
+)
 from bifurx.homotopy.norm import weighted_inf_norm
 from bifurx.homotopy.stepsize import kantorovich_h
 
@@ -75,7 +83,24 @@ def _linear_consistency_ok(
     )
 
 
-def _solve_bordered_with_fallback(
+def _factor_bordered_step(
+    Ju: jax.Array,
+    Jp: jax.Array,
+    c_vec: jax.Array,
+    d_val: jax.Array,
+    solver_method: str,
+) -> BlockBorderedFactorization | BorderedFactorization:
+    """Factorize the bordered linear system once per Newton iteration."""
+    if solver_method == "block":
+        return factor_bordered_block(Ju, Jp, c_vec, d_val)
+    if solver_method in ("auto", "direct"):
+        return factor_bordered_matrix(Ju, Jp, c_vec, d_val)
+    msg = f"Unknown solver_method: {solver_method}. Choose from 'auto', 'block', or 'direct'."
+    raise ValueError(msg)
+
+
+def _solve_factored_with_fallback(
+    fac: BlockBorderedFactorization | BorderedFactorization,
     Ju: jax.Array,
     Jp: jax.Array,
     c_vec: jax.Array,
@@ -85,16 +110,12 @@ def _solve_bordered_with_fallback(
     arc_res: jax.Array,
     solver_method: str,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    """Solve bordered linear system, falling back to direct if block LU loses accuracy."""
-    sol = solve_bordered_system(
-        A=Ju,
-        b=Jp,
-        c=c_vec,
-        d=d_val,
-        f=-f_val,
-        g=-arc_res,
-        method=solver_method,
-    )
+    """Solve bordered linear system reusing `fac`, falling back to lstsq if `auto` loses accuracy."""
+    if isinstance(fac, BlockBorderedFactorization):
+        sol = solve_factored_bordered_block(fac, -f_val, -arc_res)
+    else:
+        sol = solve_factored_bordered(fac, -f_val, -arc_res)
+
     du = jnp.asarray(sol.x, dtype=jnp.float64)
     dp = jnp.asarray(jnp.squeeze(sol.y), dtype=jnp.float64)
     step_norm_w = jnp.asarray(weighted_inf_norm(sol.z, weights_arr), dtype=jnp.float64)
@@ -104,22 +125,16 @@ def _solve_bordered_with_fallback(
         ),
         dtype=bool,
     )
-    if solver_method != "auto":
+    if solver_method != "auto" or isinstance(fac, BlockBorderedFactorization):
         return du, dp, step_norm_w, lin_ok
 
-    def _retry_direct() -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        sol_d = solve_bordered_system(
-            A=Ju,
-            b=Jp,
-            c=c_vec,
-            d=d_val,
-            f=-f_val,
-            g=-arc_res,
-            method="direct",
-        )
-        du_d = jnp.asarray(sol_d.x, dtype=jnp.float64)
-        dp_d = jnp.asarray(jnp.squeeze(sol_d.y), dtype=jnp.float64)
-        sw_d = jnp.asarray(weighted_inf_norm(sol_d.z, weights_arr), dtype=jnp.float64)
+    def _retry_lstsq() -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        n = du.shape[0]
+        r = jnp.concatenate([-f_val.ravel(), jnp.atleast_1d(-arc_res)])
+        z_ls = jnp.linalg.lstsq(fac.M, r, rcond=1e-12)[0]
+        du_d = jnp.asarray(z_ls[:n], dtype=jnp.float64)
+        dp_d = jnp.asarray(jnp.squeeze(z_ls[n]), dtype=jnp.float64)
+        sw_d = jnp.asarray(weighted_inf_norm(z_ls, weights_arr), dtype=jnp.float64)
         ok_d = jnp.asarray(
             _linear_consistency_ok(
                 Ju, Jp, c_vec, d_val, weights_arr, f_val, arc_res, du_d, dp_d, sw_d
@@ -131,20 +146,55 @@ def _solve_bordered_with_fallback(
     return jax.lax.cond(
         lin_ok,
         lambda: (du, dp, step_norm_w, lin_ok),
-        _retry_direct,
+        _retry_lstsq,
     )
+
+
+def _solve_operator_step(
+    bordered_solver: BorderedOperatorSolver,
+    residual_fn: Callable[[jax.Array, jax.Array], jax.Array],
+    u_lin: jax.Array,
+    p_lin: jax.Array,
+    c_vec: jax.Array,
+    d_val: jax.Array,
+    weights_arr: jax.Array,
+    fac: Any,
+    f_rhs: jax.Array,
+    arc_rhs: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Solve bordered linear system via pluggable `bordered_solver` and verify via JVP."""
+    sol = bordered_solver.solve(fac, -f_rhs, -arc_rhs)
+    du = jnp.asarray(sol.x, dtype=jnp.float64)
+    dp = jnp.asarray(jnp.squeeze(sol.y), dtype=jnp.float64)
+    step_norm_w = jnp.asarray(weighted_inf_norm(sol.z, weights_arr), dtype=jnp.float64)
+
+    _, jvp_raw = jax.jvp(residual_fn, (u_lin, p_lin), (du, dp))
+    jvp_f = jnp.atleast_1d(jnp.asarray(jvp_raw, dtype=jnp.float64)).ravel()
+    arc_jvp = jnp.dot(c_vec, du) + d_val * dp
+    jvp_all = jnp.concatenate([jvp_f, jnp.atleast_1d(arc_jvp)])
+    r_rhs = jnp.concatenate([f_rhs, jnp.atleast_1d(arc_rhs)])
+    r_lin = r_rhs + jvp_all
+    lin_norm = jnp.linalg.norm(r_lin)
+    tol_rhs = 0.5 * jnp.linalg.norm(r_rhs) + 1e-6 * jnp.linalg.norm(jvp_all)
+    lin_ok = (
+        jnp.isfinite(step_norm_w)
+        & jnp.all(jnp.isfinite(du))
+        & jnp.isfinite(dp)
+        & (lin_norm <= tol_rhs)
+    )
+    return du, dp, step_norm_w, jnp.asarray(lin_ok, dtype=bool)
 
 
 def correct_arclength_step(
     residual_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    jac_u_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    jac_p_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    u_init: jax.Array,
-    p_init: float | jax.Array,
-    u_prev: jax.Array,
-    p_prev: float | jax.Array,
-    tau_prev: jax.Array,
-    ds: float | jax.Array,
+    jac_u_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None,
+    jac_p_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None,
+    u_init: jax.Array | None = None,
+    p_init: float | jax.Array = 0.0,
+    u_prev: jax.Array | None = None,
+    p_prev: float | jax.Array = 0.0,
+    tau_prev: jax.Array | None = None,
+    ds: float | jax.Array = 0.0,
     weights: jax.Array | None = None,
     omega_init: float | jax.Array = 0.0,
     first_step: bool | jax.Array = True,
@@ -158,14 +208,22 @@ def correct_arclength_step(
     track_contraction: bool = True,
     border_c: jax.Array | None = None,
     border_d: float | jax.Array | None = None,
+    bordered_solver: BorderedOperatorSolver | None = None,
 ) -> CorrectorResult:
     """Solve bordered arclength Newton system with optional contraction-rate early abort.
 
-    Solves:
-        residual_fn(u, p) = 0
-        <c, u - u_prev> + d * (p - p_prev) - ds = 0
-    where `(c, d)` defaults to `(tau_prev[:n], tau_prev[-1])`.
+    Solves `residual_fn(u, p) = 0` and `<c, u - u_prev> + d * (p - p_prev) - ds = 0`, where
+    `(c, d)` defaults to `(tau_prev[:n], tau_prev[-1])`. Note that `rel_tol` is retained for
+    API compatibility; domain-space Kantorovich stopping is governed by `tol` and `step_tol`.
     """
+    if u_init is None or u_prev is None or tau_prev is None:
+        msg = "u_init, u_prev, and tau_prev must be provided."
+        raise ValueError(msg)
+    if bordered_solver is None and (jac_u_fn is None or jac_p_fn is None):
+        msg = "Provide jac_u_fn and jac_p_fn when bordered_solver is None."
+        raise ValueError(msg)
+    del rel_tol
+
     n = u_init.shape[0]
     u_0 = jnp.asarray(u_init, dtype=jnp.float64)
     p_0 = jnp.squeeze(jnp.asarray(p_init, dtype=jnp.float64))
@@ -252,19 +310,36 @@ def correct_arclength_step(
             has_om,
         ) = state
 
-        Ju = jnp.asarray(jac_u_fn(u, p), dtype=jnp.float64)
-        Jp = jnp.atleast_1d(jnp.asarray(jac_p_fn(u, p), dtype=jnp.float64)).ravel()
-
-        du, dp, step_norm_w, lin_ok = _solve_bordered_with_fallback(
-            Ju,
-            Jp,
-            c_vec,
-            d_val,
-            weights_arr,
-            f_val,
-            arc_res,
-            solver_method,
-        )
+        if bordered_solver is not None:
+            fac_op = bordered_solver.factor(u, p, c_vec, d_val)
+            du, dp, step_norm_w, lin_ok = _solve_operator_step(
+                bordered_solver,
+                _eval_res,
+                u,
+                p,
+                c_vec,
+                d_val,
+                weights_arr,
+                fac_op,
+                f_val,
+                arc_res,
+            )
+        else:
+            assert jac_u_fn is not None and jac_p_fn is not None
+            Ju = jnp.asarray(jac_u_fn(u, p), dtype=jnp.float64)
+            Jp = jnp.atleast_1d(jnp.asarray(jac_p_fn(u, p), dtype=jnp.float64)).ravel()
+            fac_dense = _factor_bordered_step(Ju, Jp, c_vec, d_val, solver_method)
+            du, dp, step_norm_w, lin_ok = _solve_factored_with_fallback(
+                fac_dense,
+                Ju,
+                Jp,
+                c_vec,
+                d_val,
+                weights_arr,
+                f_val,
+                arc_res,
+                solver_method,
+            )
         acc_norm = _compute_acc_norm(step_norm_w, du, dp, u, p, use_weighted_step)
 
         u_cand = u + du
@@ -313,17 +388,32 @@ def correct_arclength_step(
             )
 
             def _do_final_check() -> tuple[jax.Array, ...]:
-                # Reuse (Ju, Jp) for a zero-Jacobian simplified-Newton Kantorovich check.
-                du_chk, dp_chk, sw_chk, lin_chk_ok = _solve_bordered_with_fallback(
-                    Ju,
-                    Jp,
-                    c_vec,
-                    d_val,
-                    weights_arr,
-                    f_next,
-                    arc_next,
-                    solver_method,
-                )
+                # Reuse factored operator / LU factorization for a zero-refactor simplified-Newton check.
+                if bordered_solver is not None:
+                    du_chk, dp_chk, sw_chk, lin_chk_ok = _solve_operator_step(
+                        bordered_solver,
+                        _eval_res,
+                        u,
+                        p,
+                        c_vec,
+                        d_val,
+                        weights_arr,
+                        fac_op,
+                        f_next,
+                        arc_next,
+                    )
+                else:
+                    du_chk, dp_chk, sw_chk, lin_chk_ok = _solve_factored_with_fallback(
+                        fac_dense,
+                        Ju,
+                        Jp,
+                        c_vec,
+                        d_val,
+                        weights_arr,
+                        f_next,
+                        arc_next,
+                        solver_method,
+                    )
                 acc_chk = _compute_acc_norm(
                     sw_chk, du_chk, dp_chk, u_cand, p_cand, use_weighted_step
                 )

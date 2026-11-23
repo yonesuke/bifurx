@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from bifurx.homotopy.bordered import solve_bordered_system
+from bifurx.homotopy.bordered import BorderedOperatorSolver, solve_bordered_system
 from bifurx.homotopy.corrector import correct_arclength_step
 from bifurx.homotopy.norm import (
     WeightedNormOptions,
@@ -47,14 +47,15 @@ def _normalize_tangent(tau: jax.Array, w_arc: jax.Array | None = None) -> jax.Ar
 
 
 def compute_tangent(
-    jac_u_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    jac_p_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    u0: ArrayLike,
-    p0: float | jax.Array,
+    jac_u_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None,
+    jac_p_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None,
+    u0: ArrayLike | None = None,
+    p0: float | jax.Array = 0.0,
     direction: float | jax.Array = 1.0,
     initial_tangent: jax.Array | None = None,
     arclength_weights: jax.Array | None = None,
     param_mode: str = "arclength",
+    bordered_solver: BorderedOperatorSolver | None = None,
 ) -> jax.Array:
     """Compute or normalize the initial tangent vector `(du/ds, dp/ds)`."""
     if param_mode not in ("arclength", "natural"):
@@ -66,20 +67,40 @@ def compute_tangent(
         tau_in = jnp.asarray(initial_tangent, dtype=jnp.float64)
         return tau_in if param_mode == "natural" else _normalize_tangent(tau_in, w_arc)
 
+    if u0 is None:
+        msg = "u0 must be provided when initial_tangent is None."
+        raise ValueError(msg)
+    if bordered_solver is None and (jac_u_fn is None or jac_p_fn is None):
+        msg = "Provide jac_u_fn and jac_p_fn when bordered_solver is None."
+        raise ValueError(msg)
+
     u0_arr = jnp.asarray(u0, dtype=jnp.float64)
     p0_arr = jnp.squeeze(jnp.asarray(p0, dtype=jnp.float64))
+    n = u0_arr.shape[0]
+    dir_sgn = jnp.where(jnp.asarray(direction, dtype=jnp.float64) < 0.0, -1.0, 1.0)
+    zero_u = jnp.zeros(n, dtype=jnp.float64)
+    one_f = jnp.array(1.0, dtype=jnp.float64)
+
+    if bordered_solver is not None:
+        fac_op = bordered_solver.factor(u0_arr, p0_arr, zero_u, dir_sgn)
+        tau_raw = bordered_solver.solve(fac_op, zero_u, one_f).z
+        if param_mode == "natural":
+            return tau_raw
+        if jac_u_fn is None or jac_p_fn is None or bool(jnp.all(jnp.isfinite(tau_raw))):
+            tau_aligned = tau_raw * jnp.where(tau_raw[-1] * dir_sgn < 0.0, -1.0, 1.0)
+            return _normalize_tangent(tau_aligned, w_arc)
+
+    assert jac_u_fn is not None and jac_p_fn is not None
     Ju = jac_u_fn(u0_arr, p0_arr)
     Jp = jac_p_fn(u0_arr, p0_arr)
-    n = u0_arr.shape[0]
 
     if param_mode == "natural":
-        dir_sgn = jnp.where(jnp.asarray(direction, dtype=jnp.float64) < 0.0, -1.0, 1.0)
         sol = solve_bordered_system(
             A=Ju,
             b=Jp,
-            c=jnp.zeros(n, dtype=jnp.float64),
+            c=zero_u,
             d=dir_sgn,
-            f=jnp.zeros(n, dtype=jnp.float64),
+            f=zero_u,
             g=1.0,
         )
         return sol.z
@@ -87,17 +108,17 @@ def compute_tangent(
     J = jnp.hstack([Ju, Jp.reshape(-1, 1)])
     _, _, vh = jnp.linalg.svd(J)
     tau = vh[-1, :]
-    tau = tau * jnp.where(tau[-1] * direction < 0.0, -1.0, 1.0)
+    tau = tau * jnp.where(tau[-1] * dir_sgn < 0.0, -1.0, 1.0)
     return _normalize_tangent(tau, w_arc)
 
 
 def track_arclength_scan(
     residual_fn: Callable[..., jax.Array],
-    jac_u_fn: Callable[..., jax.Array],
-    jac_p_fn: Callable[..., jax.Array],
-    u0: ArrayLike,
-    p0: float | jax.Array,
-    tau0: jax.Array,
+    jac_u_fn: Callable[..., jax.Array] | None = None,
+    jac_p_fn: Callable[..., jax.Array] | None = None,
+    u0: ArrayLike | None = None,
+    p0: float | jax.Array = 0.0,
+    tau0: jax.Array | None = None,
     ds: float | jax.Array = 0.05,
     ds_min: float | jax.Array = 1e-6,
     ds_max: float | jax.Array = 0.5,
@@ -118,10 +139,16 @@ def track_arclength_scan(
     solver_method: str = "auto",
     tracker_params: TrackerParameters | None = None,
     norm_options: WeightedNormOptions | None = None,
-    step_observer_fn: Callable[[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array], Any]
-    | None = None,
+    step_observer_fn: Callable[[jax.Array, jax.Array, jax.Array, Any, Any], Any] | None = None,
+    bordered_solver: BorderedOperatorSolver | Callable[[Any], BorderedOperatorSolver] | None = None,
 ) -> TrackScanResult:
     """Track a 1D solution curve `(u(s), p(s))` with `jax.lax.scan`."""
+    if u0 is None or tau0 is None:
+        msg = "u0 and tau0 must be provided."
+        raise ValueError(msg)
+    if bordered_solver is None and (jac_u_fn is None or jac_p_fn is None):
+        msg = "Provide jac_u_fn and jac_p_fn when bordered_solver is None."
+        raise ValueError(msg)
     if predictor not in ("tangent", "pade21"):
         msg = f"Unknown predictor: {predictor}. Choose from 'tangent' or 'pade21'."
         raise ValueError(msg)
@@ -153,20 +180,31 @@ def track_arclength_scan(
     p_min_val = jnp.asarray(p_min, dtype=jnp.float64)
     p_max_val = jnp.asarray(p_max, dtype=jnp.float64)
 
-    def _bind_callables(
+    def _bind_res(chart: Any) -> Callable[[jax.Array, jax.Array], jax.Array]:
+        if chart_fn is None:
+            return residual_fn
+        return lambda u_v, p_v: residual_fn(u_v, p_v, chart)
+
+    def _bind_jacs(
         chart: Any,
     ) -> tuple[
         Callable[[jax.Array, jax.Array], jax.Array],
         Callable[[jax.Array, jax.Array], jax.Array],
-        Callable[[jax.Array, jax.Array], jax.Array],
     ]:
+        assert jac_u_fn is not None and jac_p_fn is not None
         if chart_fn is None:
-            return residual_fn, jac_u_fn, jac_p_fn
+            return jac_u_fn, jac_p_fn
         return (
-            lambda u_v, p_v: residual_fn(u_v, p_v, chart),
             lambda u_v, p_v: jac_u_fn(u_v, p_v, chart),
             lambda u_v, p_v: jac_p_fn(u_v, p_v, chart),
         )
+
+    def _resolve_solver(chart: Any) -> BorderedOperatorSolver | None:
+        if bordered_solver is None:
+            return None
+        if isinstance(bordered_solver, BorderedOperatorSolver):
+            return bordered_solver
+        return bordered_solver(chart)
 
     def _border_for(tau_val: jax.Array) -> tuple[jax.Array | None, jax.Array | None]:
         if is_natural:
@@ -180,21 +218,35 @@ def track_arclength_scan(
     w0 = init_weighted_norm(jnp.concatenate([u_cur, jnp.atleast_1d(p_cur)]), n_opts)
 
     if predictor == "pade21":
-        res0_fn, ju0_fn, jp0_fn = _bind_callables(chart_0)
-        Ju0 = ju0_fn(u_cur, p_cur)
-        Jp0 = jp0_fn(u_cur, p_cur)
+        res0_fn = _bind_res(chart_0)
+        solver_0 = _resolve_solver(chart_0)
         bc0, bd0 = _border_for(tau_cur)
-        z2_0, z3_0, tr_0 = compute_arclength_taylor3(
-            res0_fn,
-            u_cur,
-            p_cur,
-            tau_cur,
-            Ju0,
-            Jp0,
-            border_c=bc0,
-            border_d=bd0,
-            weights=w0,
-        )
+        if solver_0 is not None:
+            z2_0, z3_0, tr_0 = compute_arclength_taylor3(
+                res0_fn,
+                u_cur,
+                p_cur,
+                tau_cur,
+                border_c=bc0,
+                border_d=bd0,
+                weights=w0,
+                bordered_solver=solver_0,
+            )
+        else:
+            ju0_fn, jp0_fn = _bind_jacs(chart_0)
+            Ju0 = ju0_fn(u_cur, p_cur)
+            Jp0 = jp0_fn(u_cur, p_cur)
+            z2_0, z3_0, tr_0 = compute_arclength_taylor3(
+                res0_fn,
+                u_cur,
+                p_cur,
+                tau_cur,
+                Ju0,
+                Jp0,
+                border_c=bc0,
+                border_d=bd0,
+                weights=w0,
+            )
     else:
         z2_0 = jnp.zeros(n + 1, dtype=jnp.float64)
         z3_0 = jnp.zeros(n + 1, dtype=jnp.float64)
@@ -219,38 +271,40 @@ def track_arclength_scan(
     )
 
     def _compute_next_tau(
-        ju_step: Callable[[jax.Array, jax.Array], jax.Array],
-        jp_step: Callable[[jax.Array, jax.Array], jax.Array],
+        chart_cand: Any,
+        solver_cand: BorderedOperatorSolver | None,
         u_val: jax.Array,
         p_val: jax.Array,
         tau_prev: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        Ju_cand = ju_step(u_val, p_val)
-        Jp_cand = jp_step(u_val, p_val)
-        if is_natural:
-            sol_tau = solve_bordered_system(
+    ) -> tuple[jax.Array, jax.Array | None, jax.Array | None]:
+        c_bord = (
+            zero_u if is_natural else (tau_prev[:n] if w_arc is None else w_arc[:n] * tau_prev[:n])
+        )
+        d_bord = (
+            dir_sgn if is_natural else (tau_prev[-1] if w_arc is None else w_arc[-1] * tau_prev[-1])
+        )
+
+        if solver_cand is not None:
+            fac_tau = solver_cand.factor(u_val, p_val, c_bord, d_bord)
+            tau_raw = solver_cand.solve(fac_tau, zero_u, jnp.array(1.0, dtype=jnp.float64)).z
+            Ju_cand, Jp_cand = None, None
+        else:
+            ju_step, jp_step = _bind_jacs(chart_cand)
+            Ju_cand = ju_step(u_val, p_val)
+            Jp_cand = jp_step(u_val, p_val)
+            tau_raw = solve_bordered_system(
                 A=Ju_cand,
                 b=Jp_cand,
-                c=zero_u,
-                d=dir_sgn,
+                c=c_bord,
+                d=d_bord,
                 f=zero_u,
                 g=1.0,
                 method=solver_method,
-            )
-            return sol_tau.z, Ju_cand, Jp_cand
+            ).z
 
-        c_prev = tau_prev[:n] if w_arc is None else w_arc[:n] * tau_prev[:n]
-        d_prev = tau_prev[-1] if w_arc is None else w_arc[-1] * tau_prev[-1]
-        sol_tau = solve_bordered_system(
-            A=Ju_cand,
-            b=Jp_cand,
-            c=c_prev,
-            d=d_prev,
-            f=zero_u,
-            g=1.0,
-            method=solver_method,
-        )
-        tau_cand = _normalize_tangent(sol_tau.z, w_arc)
+        if is_natural:
+            return tau_raw, Ju_cand, Jp_cand
+        tau_cand = _normalize_tangent(tau_raw, w_arc)
         align_dot = (
             jnp.dot(tau_cand, tau_prev) if w_arc is None else jnp.dot(w_arc * tau_cand, tau_prev)
         )
@@ -294,7 +348,9 @@ def track_arclength_scan(
         w_step = update_weighted_norm(
             weights, jnp.concatenate([u_pred, jnp.atleast_1d(p_pred)]), n_opts
         )
-        res_step, ju_step, jp_step = _bind_callables(chart)
+        res_step = _bind_res(chart)
+        solver_step = _resolve_solver(chart)
+        ju_step, jp_step = _bind_jacs(chart) if solver_step is None else (None, None)
         bc_step, bd_step = _border_for(tau)
 
         res = correct_arclength_step(
@@ -320,6 +376,7 @@ def track_arclength_scan(
             track_contraction=adaptive_step,
             border_c=bc_step,
             border_d=bd_step,
+            bordered_solver=solver_step,
         )
 
         u_cand, p_cand = res.u, res.p
@@ -332,8 +389,9 @@ def track_arclength_scan(
         converged_step = is_active & step_ok
 
         chart_cand = chart_fn(u_cand, p_cand) if chart_fn is not None else chart
-        res_next_fn, ju_next_fn, jp_next_fn = _bind_callables(chart_cand)
-        tau_cand, Ju_cand, Jp_cand = _compute_next_tau(ju_next_fn, jp_next_fn, u_cand, p_cand, tau)
+        res_next_fn = _bind_res(chart_cand)
+        solver_next = _resolve_solver(chart_cand)
+        tau_cand, Ju_cand, Jp_cand = _compute_next_tau(chart_cand, solver_next, u_cand, p_cand, tau)
 
         if predictor == "pade21":
             bc_cand, bd_cand = _border_for(tau_cand)
@@ -347,6 +405,7 @@ def track_arclength_scan(
                 border_c=bc_cand,
                 border_d=bd_cand,
                 weights=w_step,
+                bordered_solver=solver_next,
             )
         else:
             z2_cand, z3_cand, tr_cand = z2, z3, tr
