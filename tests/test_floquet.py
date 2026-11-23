@@ -158,10 +158,14 @@ def test_periodic_schur_extreme_stiff_synthetic_factors():
     D3 = D3.at[:, 1, 2].set(0.4)
     factors_3 = jax.vmap(lambda qn, dk, qk: qn @ dk @ qk.T)(Q3_next, D3, Q3)
 
-    # Confirm explicit product loses the 10^{-200} eigenvalue
+    # Confirm explicit product loses the 10^{-200} eigenvalue (overflows, underflows to 0, or swamped by noise)
     M3_explicit, _ = jax.lax.scan(lambda acc, mk: (mk @ acc, None), jnp.eye(3), factors_3)
     eigs_explicit = jnp.sort(jnp.abs(jnp.linalg.eigvals(M3_explicit)))
-    assert not jnp.isfinite(eigs_explicit[-1]) or float(eigs_explicit[0]) > 1e-100
+    assert (
+        not jnp.isfinite(eigs_explicit[-1])
+        or float(eigs_explicit[0]) == 0.0
+        or abs(float(jnp.log10(eigs_explicit[0])) - (-200.0)) > 50.0
+    )
 
     _, log_abs_3, _ = periodic_schur_eigenvalues(factors_3)
     expected_log_3 = jnp.array(
