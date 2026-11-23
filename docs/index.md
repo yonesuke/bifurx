@@ -21,18 +21,19 @@ For decades, software packages such as **AUTO-07P**, **MATCONT**, and **COCO** h
 
 ## Key Features
 
-- **Keller Pseudo-Arclength Continuation**:
-  - Traverses turning points (folds/limit points) where natural parameter continuation fails ($\partial u / \partial p \to \infty$).
-  - Dynamic adaptive step size control based on Newton convergence rates.
-- **Robust Bordered Linear System Solvers**:
-  - Fast Block LU elimination (Sherman-Morrison-Woodbury formula) for regular Jacobians.
-  - Direct augmented matrix factorization with SVD least-squares fallback for singular bordered systems.
-- **Codimension-1 Bifurcation Detection & Refinement**:
-  - **Limit Points / Folds (LP)**: Detected via tangent parameter velocity sign changes $\dot{p}=0$ and refined using the Moore-Spence augmented system.
-  - **Branch Points (BP)**: Detected via determinant zero-crossings $\det(\nabla_u F) = 0$ and refined via bisection/Brent root-finding.
-  - **Hopf Bifurcations (HB)**: Monitored via bialternate matrix products $2 \nabla_u F \odot I$ and imaginary eigenvalue transitions.
-- **Branch Switching via Algebraic Bifurcation Equation (ABE)**:
-  - Solves the quadratic ABE using directional second derivatives evaluated via nested `jax.jvp`, switching onto intersecting branches without heuristic perturbation.
+- **Standalone Pure-JAX Homotopy Core (`bifurx.homotopy`)**:
+  - Keller pseudo-arclength and natural parameter continuation compiled end-to-end with `jax.lax.scan`.
+  - Euler tangent and 3rd-order **Padé (2,1)** rational predictors with scale-invariant trust regions via nested `jax.jvp`.
+  - Scale-invariant weighted norms, affine-invariant Kantorovich Newton corrector, and theory-grounded adaptive step-size control (Timme, 2020).
+- **Bordered Linear Solvers & Pluggable Operators**:
+  - Block LU (Schur complement), Direct LU with SVD/least-squares fallback, matrix-free GMRES via `jax.jvp`, and de Boor-Swartz block condensation for collocation BVPs.
+- **Codimension-1 & Codimension-2 Bifurcation Analysis**:
+  - **Limit Points (LP)**, **Branch Points (BP)** (via bordered Jacobian determinant), and **Hopf Bifurcations (HB)** (with first Lyapunov coefficient $l_1$).
+  - **Branch Switching** via the Algebraic Bifurcation Equation (ABE) using nested `jax.jvp`.
+  - **Two-Parameter Continuation (`bifurx.codim2`)**: Tracks LP and HB curves and detects Cusp (CP), Bogdanov-Takens (BT), Generalized Hopf (GH), and Zero-Hopf (ZH) singularities.
+- **Periodic Orbits, Floquet Stability & iPRCs (`bifurx.bvp`, `bifurx.prc`)**:
+  - Superconvergent Gauss-Legendre orthogonal collocation with adaptive mesh redistribution and monodromy condensation for Floquet multipliers (LPC, PD, NS).
+  - Non-iterative linear adjoint collocation BVP for infinitesimal Phase Response Curves (iPRCs) and their parameter continuation.
 
 ---
 
@@ -111,8 +112,16 @@ print(f"Upper branch computed {res_up.num_points} points.")
 ## Documentation Structure
 
 - **Theory**:
-  - [Keller Pseudo-Arclength Continuation](theory/keller_arclength.md): Complete derivation of the bordered Jacobian equations and block solvers.
-  - [Bifurcation Theory & Detection](theory/bifurcations.md): Mathematical formulations of Fold, Hopf, and Branch Points, the Moore-Spence system, and the Algebraic Bifurcation Equation.
+  - [Homotopy Continuation: General Theory & Path-Tracking Core](theory/homotopy_continuation.md): General theory of `bifurx.homotopy`—Keller pseudo-arclength, scale-invariant weighted norms, Padé (2,1) predictors, bordered/operator solvers, affine-invariant Kantorovich Newton, and Timme (2020) step-size control.
+  - [Applying Homotopy Continuation to Dynamical Systems](theory/dynamical_systems.md): How equilibria, codimension-2 curves, Gauss-Legendre collocation periodic orbits (with de Boor-Swartz condensation & Floquet analysis), and iPRCs map onto the homotopy core.
+  - [Bifurcation Theory & Branch Switching](theory/bifurcations.md): Mathematical formulations of Fold, Hopf, and Branch Points, the Moore-Spence & Hopf defining systems, first Lyapunov coefficient, and the Algebraic Bifurcation Equation.
+  - [Phase Reduction Theory & iPRC](theory/prc_theory.md): Isochrons, linear adjoint collocation BVP, Malkin weak-coupling theory, and iPRC parameter continuation.
+  - [CR3BP & KAM Torus Theory](theory/cr3bp_kam.md): Hamiltonian continuation, Lyapunov Center Theorem, symplectic Floquet theory, and KAM invariant tori.
 - **Interactive Tutorials & Demos**:
   - [Demo 1: Supercritical Pitchfork Bifurcation](../notebooks/01_pitchfork_bifurcation.ipynb): Step-by-step branch switching and diagram plotting.
   - [Demo 2: AUTO-07P Demo `ab` Chemical Reactor](../notebooks/02_demo_ab_equilibrium.ipynb): S-shaped curve, fold detection, Hopf bifurcation, and eigenvalue spectrum analysis.
+  - [Demo 3: Periodic Orbits in Demo `ab`](../notebooks/03_demo_ab_periodic.ipynb): Hopf initialization, Gauss-Legendre collocation, and Floquet stability.
+  - [Demo 4: Codimension-2 Continuation in Demo `ab`](../notebooks/04_demo_ab_moore_spence.ipynb): Two-parameter Fold/Hopf curves and codim-2 singularities.
+  - [Demo 5: CR3BP Lyapunov Orbits](../notebooks/05_demo_r3b_lyapunov.ipynb): Hamiltonian periodic orbit families and symplectic Floquet multipliers.
+  - [Demo 6: Infinitesimal Phase Response Curves](../notebooks/06_phase_response_curve.ipynb): Adjoint BVP iPRC computation and continuation.
+  - [Demo 7: Bratu BVP](../notebooks/07_demo_bratu_bvp.ipynb): Nonlinear boundary value problem continuation.

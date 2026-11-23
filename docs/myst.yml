@@ -11,7 +11,8 @@ project:
     - file: index.md
     - title: Theory
       children:
-        - file: theory/keller_arclength.md
+        - file: theory/homotopy_continuation.md
+        - file: theory/dynamical_systems.md
         - file: theory/bifurcations.md
         - file: theory/prc_theory.md
         - file: theory/cr3bp_kam.md

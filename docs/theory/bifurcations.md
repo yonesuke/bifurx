@@ -45,11 +45,11 @@ A **Branch Point** (transcritical, supercritical/subcritical pitchfork, or symme
 - **Transversality**: $J_p \in \text{Range}(J_u)$, so $\psi^T J_p = 0$.
 
 #### Test Function
-The branch point test function monitors the determinant of the state Jacobian:
+A naive determinant $\det(J_u)$ vanishes at both folds (LP) and branch points (BP). To isolate branch points cleanly without firing at regular folds, `bifurx` monitors the determinant of the **bordered continuation Jacobian**:
 
-$$\psi_{\text{BP}}(u, p) = \det(J_u(u, p))$$
+$$\psi_{\text{BP}}(u, p, \tau) = \det \begin{pmatrix} J_u(u, p) & J_p(u, p) \\ \dot{u}^T & \dot{p} \end{pmatrix}$$
 
-A zero-crossing $\psi_{\text{BP}}(u_k, p_k) \cdot \psi_{\text{BP}}(u_{k+1}, p_{k+1}) < 0$ signals that an odd number of real eigenvalues crossed the imaginary axis through zero.
+At a regular fold, the bordered matrix remains nonsingular ($\psi_{\text{BP}} \ne 0$). At a simple branch point, $J_p \in \operatorname{Range}(J_u)$, so the extended Jacobian $[J_u \;\; J_p]$ drops rank and $\psi_{\text{BP}}$ crosses zero cleanly: $\psi_{\text{BP}, k} \cdot \psi_{\text{BP}, k+1} < 0$.
 
 ---
 
@@ -70,6 +70,16 @@ A **Hopf Bifurcation** marks the emergence or disappearance of small-amplitude l
    $$\mu_{j, k} = \lambda_j + \lambda_k \quad (1 \le j < k \le n)$$
    At a Hopf point, $\mu_{1, 2} = (i\omega) + (-i\omega) = 0$. Hence:
    $$\det(2 J_u \odot I) = 0$$
+
+#### Hopf Defining System & First Lyapunov Coefficient
+To refine a Hopf bifurcation point (or continue a Hopf curve in two parameters via `bifurx.codim2`), `bifurx` solves the real-valued $(3n+2)$-dimensional **Hopf defining system** for $(u, p, v_r, v_i, \omega)$:
+
+$$G_{\text{HB}}(u, p, v_r, v_i, \omega) = \begin{pmatrix} F(u, p) \\ J_u v_r + \omega v_i \\ J_u v_i - \omega v_r \\ \langle l_R, v_r \rangle - 1 \\ \langle l_R, v_i \rangle \end{pmatrix} = 0$$
+
+Once located, `compute_first_lyapunov_coefficient` evaluates the **first Lyapunov coefficient** $l_1$ using nested `jax.jvp` calls for the multilinear forms $B(q, q)$ and $C(q, q, \bar{q})$:
+- $l_1 < 0$: **supercritical Hopf** (stable limit cycle bifurcates).
+- $l_1 > 0$: **subcritical Hopf** (unstable limit cycle bifurcates).
+- $l_1 = 0$: **Generalized Hopf / Bautin (GH)** codimension-2 point.
 
 ---
 
