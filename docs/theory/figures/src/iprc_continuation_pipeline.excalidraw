@@ -1,0 +1,118 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "bifurx-docs",
+  "elements": [
+    {
+      "type": "rectangle",
+      "x": 15.0,
+      "y": -156.0,
+      "width": 168.0,
+      "height": 93.0,
+      "strokeColor": "#475569",
+      "backgroundColor": "#f1f5f9",
+      "roughness": 1,
+      "label": "Seed Orbit\n(u_0, T_0, p_0)\nHopf or user guess"
+    },
+    {
+      "type": "rectangle",
+      "x": 222.0,
+      "y": -156.0,
+      "width": 279.0,
+      "height": 93.0,
+      "strokeColor": "#1e3a5f",
+      "backgroundColor": "#dbeafe",
+      "roughness": 1,
+      "label": "Periodic Orbit Continuation\ncontinue_periodic_orbit (Gauss collocation)\nO(N n^3) cyclic block-QR  \u2022  adaptive remesh"
+    },
+    {
+      "type": "rectangle",
+      "x": 543.0,
+      "y": -156.0,
+      "width": 309.0,
+      "height": 93.0,
+      "strokeColor": "#c2410c",
+      "backgroundColor": "#ffedd5",
+      "roughness": 1,
+      "label": "One-Shot Block-Condensed Adjoint\n_solve_adjoint_collocation_jax (same mesh!)\nParallel vmap LU + rank-1 border alpha f0_unit"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          184.2,
+          -202.79999999999998
+        ],
+        [
+          219.60000000000002,
+          -202.79999999999998
+        ]
+      ],
+      "strokeColor": "#334155"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          502.80000000000007,
+          -202.79999999999998
+        ],
+        [
+          540.6,
+          -202.79999999999998
+        ]
+      ],
+      "strokeColor": "#1e3a5f"
+    },
+    {
+      "type": "rectangle",
+      "x": 222.0,
+      "y": -21.0,
+      "width": 630.0,
+      "height": 81.0,
+      "strokeColor": "#15803d",
+      "backgroundColor": "#dcfce7",
+      "roughness": 1,
+      "label": "IPRCContinuationResult:  Full Manifold Z(theta; p)\nOrbits u*(p)   \u2022   Periods T(p)   \u2022   iPRC waveforms Z(theta; p)   \u2022   Peak amplitudes & zero crossings"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          697.1999999999999,
+          -154.2
+        ],
+        [
+          697.1999999999999,
+          -104.4
+        ]
+      ],
+      "strokeColor": "#15803d"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          361.2,
+          -154.2
+        ],
+        [
+          361.2,
+          -126.0
+        ],
+        [
+          279.0,
+          -126.0
+        ],
+        [
+          279.0,
+          -154.2
+        ]
+      ],
+      "strokeColor": "#2563eb"
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff"
+  }
+}

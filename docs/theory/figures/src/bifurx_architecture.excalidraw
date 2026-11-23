@@ -1,0 +1,121 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "bifurx-docs",
+  "elements": [
+    {
+      "type": "rectangle",
+      "x": 201.0,
+      "y": -237.0,
+      "width": 462.0,
+      "height": 105.0,
+      "strokeColor": "#1e3a5f",
+      "backgroundColor": "#dbeafe",
+      "roughness": 1,
+      "label": "bifurx.homotopy  (Standalone Pure-JAX Core)\ntrack_arclength_scan  \u2022  Euler / Pad\u00e9 (2,1) Predictors  \u2022  Weighted Norm\nKantorovich Bordered Newton  \u2022  Timme Adaptive Step-Size Control"
+    },
+    {
+      "type": "rectangle",
+      "x": 18.0,
+      "y": -27.0,
+      "width": 189.0,
+      "height": 122.99999999999999,
+      "strokeColor": "#0369a1",
+      "backgroundColor": "#e0f2fe",
+      "roughness": 1,
+      "label": "Equilibria\nbifurx.continuation\nLP / BP / HB detection\nABE branch switching"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          276.0,
+          -237.0
+        ],
+        [
+          112.5,
+          -153.0
+        ]
+      ],
+      "strokeColor": "#0369a1"
+    },
+    {
+      "type": "rectangle",
+      "x": 231.0,
+      "y": -27.0,
+      "width": 189.0,
+      "height": 122.99999999999999,
+      "strokeColor": "#5b21b6",
+      "backgroundColor": "#ede9fe",
+      "roughness": 1,
+      "label": "Codim-2 Curves\nbifurx.codim2\nLP & HB 2-param curves\nCP / BT / GH / ZH"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          379.8,
+          -237.0
+        ],
+        [
+          325.5,
+          -153.0
+        ]
+      ],
+      "strokeColor": "#5b21b6"
+    },
+    {
+      "type": "rectangle",
+      "x": 444.0,
+      "y": -27.0,
+      "width": 189.0,
+      "height": 122.99999999999999,
+      "strokeColor": "#15803d",
+      "backgroundColor": "#dcfce7",
+      "roughness": 1,
+      "label": "Periodic Orbits\nbifurx.bvp\nGauss collocation\nO(N n^3) QR & Periodic Schur"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          483.5999999999999,
+          -237.0
+        ],
+        [
+          538.5,
+          -153.0
+        ]
+      ],
+      "strokeColor": "#15803d"
+    },
+    {
+      "type": "rectangle",
+      "x": 657.0,
+      "y": -27.0,
+      "width": 189.0,
+      "height": 122.99999999999999,
+      "strokeColor": "#c2410c",
+      "backgroundColor": "#ffedd5",
+      "roughness": 1,
+      "label": "iPRC / Phase\nbifurx.prc\nBlock-condensed linear\nadjoint BVP & continuation"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          587.4,
+          -237.0
+        ],
+        [
+          751.4999999999999,
+          -153.0
+        ]
+      ],
+      "strokeColor": "#c2410c"
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff"
+  }
+}

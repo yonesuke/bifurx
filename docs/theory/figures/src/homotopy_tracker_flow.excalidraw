@@ -1,0 +1,232 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "bifurx-docs",
+  "elements": [
+    {
+      "type": "rectangle",
+      "x": 15.0,
+      "y": -231.0,
+      "width": 153.0,
+      "height": 87.0,
+      "strokeColor": "#475569",
+      "backgroundColor": "#f1f5f9",
+      "roughness": 1,
+      "label": "Carry State\n(u_k, p_k, tau_k,\nchart_k, ds_k, w_k)"
+    },
+    {
+      "type": "rectangle",
+      "x": 204.0,
+      "y": -231.0,
+      "width": 177.0,
+      "height": 87.0,
+      "strokeColor": "#1d4ed8",
+      "backgroundColor": "#dbeafe",
+      "roughness": 1,
+      "label": "1. Predictor\nEuler tangent or\nPad\u00e9 (2,1) rational"
+    },
+    {
+      "type": "rectangle",
+      "x": 417.0,
+      "y": -231.0,
+      "width": 168.0,
+      "height": 87.0,
+      "strokeColor": "#0369a1",
+      "backgroundColor": "#e0f2fe",
+      "roughness": 1,
+      "label": "2. Norm Update\nScale-invariant\nweights w_k (EMA)"
+    },
+    {
+      "type": "rectangle",
+      "x": 621.0,
+      "y": -231.0,
+      "width": 261.0,
+      "height": 87.0,
+      "strokeColor": "#6d28d9",
+      "backgroundColor": "#ede9fe",
+      "roughness": 1,
+      "label": "3. Bordered Newton Corrector\nKantorovich contraction check\n(Dense LU / Block LU / OperatorSolver)"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          169.2,
+          -274.8
+        ],
+        [
+          201.6,
+          -274.8
+        ]
+      ],
+      "strokeColor": "#334155"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          382.2,
+          -274.8
+        ],
+        [
+          414.6,
+          -274.8
+        ]
+      ],
+      "strokeColor": "#334155"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          586.1999999999999,
+          -274.8
+        ],
+        [
+          618.6,
+          -274.8
+        ]
+      ],
+      "strokeColor": "#334155"
+    },
+    {
+      "type": "diamond",
+      "x": 652.1999999999999,
+      "y": -183.00000000000003,
+      "width": 198.0,
+      "height": 102.0,
+      "strokeColor": "#b45309",
+      "backgroundColor": "#fef3c7",
+      "roughness": 1,
+      "label": "Converged &\naccept_fn?"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          751.1999999999999,
+          -229.8
+        ],
+        [
+          751.1999999999999,
+          -184.8
+        ]
+      ],
+      "strokeColor": "#334155"
+    },
+    {
+      "type": "rectangle",
+      "x": 303.0,
+      "y": -117.0,
+      "width": 237.0,
+      "height": 69.0,
+      "strokeColor": "#b91c1c",
+      "backgroundColor": "#fee2e2",
+      "roughness": 1,
+      "label": "Reject: Timme Contraction\nShrink ds_k analytically -> retry step"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          650.4,
+          -132.0
+        ],
+        [
+          542.4,
+          -151.2
+        ]
+      ],
+      "strokeColor": "#b91c1c"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          301.2,
+          -151.2
+        ],
+        [
+          291.0,
+          -151.2
+        ],
+        [
+          291.0,
+          -228.6
+        ]
+      ],
+      "strokeColor": "#b91c1c"
+    },
+    {
+      "type": "rectangle",
+      "x": 303.0,
+      "y": -15.0,
+      "width": 255.0,
+      "height": 75.0,
+      "strokeColor": "#15803d",
+      "backgroundColor": "#dcfce7",
+      "roughness": 1,
+      "label": "4. Update Chart, Tangent & Taylor3\nchart_fn(u, p)  \u2022  orient <tau_{k+1}, tau_k> > 0"
+    },
+    {
+      "type": "rectangle",
+      "x": 15.0,
+      "y": -15.0,
+      "width": 249.00000000000003,
+      "height": 75.0,
+      "strokeColor": "#047857",
+      "backgroundColor": "#d1fae5",
+      "roughness": 1,
+      "label": "5. Observer & Adaptive ds_{k+1}\nstep_observer_fn (eigvals / Floquet)\nTimme optimal ds_{k+1}  ->  next step"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          751.1999999999999,
+          -79.2
+        ],
+        [
+          751.1999999999999,
+          -52.2
+        ],
+        [
+          560.4,
+          -52.2
+        ]
+      ],
+      "strokeColor": "#15803d"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          301.2,
+          -52.2
+        ],
+        [
+          266.40000000000003,
+          -52.2
+        ]
+      ],
+      "strokeColor": "#15803d"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          91.2,
+          -91.8
+        ],
+        [
+          91.2,
+          -228.6
+        ]
+      ],
+      "strokeColor": "#047857"
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff"
+  }
+}
