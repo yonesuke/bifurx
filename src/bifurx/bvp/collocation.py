@@ -108,7 +108,9 @@ class PeriodicOrbitResult(NamedTuple):
         )
 
         is_scalar = jnp.ndim(t) == 0
-        t_arr = jnp.atleast_1d(jnp.asarray(t, dtype=jnp.float64)) % 1.0
+        t_raw = jnp.atleast_1d(jnp.asarray(t, dtype=jnp.float64))
+        n_wraps = jnp.floor(t_raw)
+        t_arr = t_raw - n_wraps
 
         k = jnp.clip(jnp.searchsorted(mesh, t_arr, side="right") - 1, 0, N - 1)
         hk = mesh[k + 1] - mesh[k]
@@ -117,6 +119,8 @@ class PeriodicOrbitResult(NamedTuple):
         U_k = jnp.concatenate([u_mesh[k][:, None, :], u_gauss[k]], axis=1)
         L_vals = _eval_lagrange_basis(xi, s_nodes)
         u_eval = jnp.einsum("tj,tjn->tn", L_vals, U_k)
+        if self.problem.period_shift is not None:
+            u_eval = u_eval + n_wraps[:, None] * self.problem.period_shift[None, :]
         return u_eval[0] if is_scalar else u_eval
 
 
@@ -133,6 +137,7 @@ class CollocationProblem:
     weights: jax.Array
     num_intervals: int = 25
     num_gauss_points: int = 4
+    period_shift: jax.Array | None = None
     kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __init__(
@@ -142,16 +147,25 @@ class CollocationProblem:
         num_intervals: int | None = None,
         num_gauss_points: int | None = None,
         options: CollocationOptions | None = None,
+        period_shift: ArrayLike | None = None,
         **kwargs: Any,
     ) -> None:
         base_opts = CollocationOptions() if options is None else options
         n_int = base_opts.num_intervals if num_intervals is None else int(num_intervals)
         n_gauss = base_opts.num_gauss_points if num_gauss_points is None else int(num_gauss_points)
 
+        shift_arr: jax.Array | None = None
+        if period_shift is not None:
+            shift_arr = jnp.asarray(period_shift, dtype=jnp.float64).ravel()
+            if shift_arr.shape != (dim,):
+                msg = f"period_shift must have shape ({dim},), got {shift_arr.shape}."
+                raise ValueError(msg)
+
         object.__setattr__(self, "fn", fn)
         object.__setattr__(self, "dim", dim)
         object.__setattr__(self, "num_intervals", n_int)
         object.__setattr__(self, "num_gauss_points", n_gauss)
+        object.__setattr__(self, "period_shift", shift_arr)
         object.__setattr__(self, "kwargs", kwargs)
 
         D_arr, C_arr, rho_arr, weights_arr = collocation_matrices(self.num_gauss_points)
@@ -162,9 +176,11 @@ class CollocationProblem:
 
     def tree_flatten(
         self,
-    ) -> tuple[tuple[jax.Array, jax.Array, jax.Array, jax.Array], tuple[Any, ...]]:
-        """Flatten into JAX pytree leaves ``(D, C, rho, weights)`` and static auxiliary data."""
-        children = (self.D, self.C, self.rho, self.weights)
+    ) -> tuple[
+        tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None], tuple[Any, ...]
+    ]:
+        """Flatten into JAX pytree leaves ``(D, C, rho, weights, period_shift)`` and static aux data."""
+        children = (self.D, self.C, self.rho, self.weights, self.period_shift)
         aux = (self.fn, self.dim, self.num_intervals, self.num_gauss_points, self.kwargs)
         return children, aux
 
@@ -172,16 +188,17 @@ class CollocationProblem:
     def tree_unflatten(
         cls,
         aux: tuple[Any, ...],
-        children: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+        children: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array | None],
     ) -> CollocationProblem:
         """Rebuild a problem from JAX pytree leaves without re-running ``__init__``."""
         fn, dim, num_intervals, num_gauss_points, kwargs = aux
-        D, C, rho, weights = children
+        D, C, rho, weights, period_shift = children
         obj = object.__new__(cls)
         object.__setattr__(obj, "fn", fn)
         object.__setattr__(obj, "dim", dim)
         object.__setattr__(obj, "num_intervals", num_intervals)
         object.__setattr__(obj, "num_gauss_points", num_gauss_points)
+        object.__setattr__(obj, "period_shift", period_shift)
         object.__setattr__(obj, "kwargs", kwargs)
         object.__setattr__(obj, "D", D)
         object.__setattr__(obj, "C", C)
@@ -233,6 +250,8 @@ class CollocationProblem:
         res_coll = (du_dt - T * f_val).ravel()
 
         u_next = jnp.roll(u_mesh, -1, axis=0)
+        if self.period_shift is not None:
+            u_next = u_next.at[-1].add(self.period_shift)
         u_end_approx = jnp.einsum("j,Njd->Nd", self.C, U)
         res_cont = (u_next - u_end_approx).ravel()
 
@@ -243,7 +262,8 @@ class CollocationProblem:
             dot_u_ref_val = jnp.einsum("mj,Njd->Nmd", self.D, U_ref) / h[:, None, None]
         else:
             dot_u_ref_val = dot_u_ref
-        inner_prod = jnp.sum(dot_u_ref_val * u_gauss, axis=-1)
+        u_phase = u_gauss - u_ref_gauss if u_ref_gauss is not None else u_gauss
+        inner_prod = jnp.sum(dot_u_ref_val * u_phase, axis=-1)
         phase_val = jnp.sum(h[:, None] * self.weights[None, :] * inner_prod)
 
         return jnp.concatenate([res_coll, res_cont, jnp.atleast_1d(phase_val)])
@@ -503,6 +523,8 @@ def solve_periodic_orbit(
 
     if u_gauss_init is None:
         u_k1 = jnp.roll(u_mesh_arr, -1, axis=0)
+        if problem.period_shift is not None:
+            u_k1 = u_k1.at[-1].add(problem.period_shift)
         rho = problem.rho
         u_gauss_arr = (1.0 - rho[None, :, None]) * u_mesh_arr[:, None, :] + rho[
             None, :, None
@@ -525,7 +547,9 @@ def solve_periodic_orbit(
     dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_arr[:, None, None]
 
     def eval_res(x_vec: jax.Array) -> jax.Array:
-        return problem.residual(x_vec, p_arr, mesh_arr, dot_u_ref=dot_u_ref)
+        return problem.residual(
+            x_vec, p_arr, mesh_arr, u_ref_gauss=u_ref_gauss_arr, dot_u_ref=dot_u_ref
+        )
 
     res_norm_0 = jnp.linalg.norm(eval_res(X_init))
     init_state = (X_init, jnp.int32(0), res_norm_0 < tol_val, res_norm_0)
@@ -740,24 +764,27 @@ def continue_periodic_orbit(
         p_ref0: jax.Array,
         prev_tau_and_mesh: tuple[jax.Array, jax.Array] | None,
     ) -> tuple[
+        Callable[[jax.Array, jax.Array], tuple[jax.Array, jax.Array]],
         Callable[..., jax.Array],
-        Callable[..., jax.Array],
-        Callable[[jax.Array], BorderedOperatorSolver],
+        Callable[[tuple[jax.Array, jax.Array]], BorderedOperatorSolver],
         jax.Array | None,
         jax.Array,
         Callable[[jax.Array, jax.Array, jax.Array, Any, Any], Any] | None,
     ]:
         h_seg = mesh_seg[1:] - mesh_seg[:-1]
 
-        def chart_fn(X_ref: jax.Array, _p: jax.Array) -> jax.Array:
+        def chart_fn(X_ref: jax.Array, _p: jax.Array) -> tuple[jax.Array, jax.Array]:
             u_ref_m, u_ref_g, _ = problem.unpack_vars(X_ref)
             U_ref = jnp.concatenate([u_ref_m[:, None, :], u_ref_g], axis=1)
-            return jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_seg[:, None, None]
+            dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_seg[:, None, None]
+            return dot_u_ref, u_ref_g
 
-        def res_fn(X: jax.Array, p_val: jax.Array, dot_u_ref: jax.Array) -> jax.Array:
-            return problem.residual(X, p_val, mesh_seg, dot_u_ref=dot_u_ref)
+        def res_fn(X: jax.Array, p_val: jax.Array, chart: tuple[jax.Array, jax.Array]) -> jax.Array:
+            dot_u_ref, u_ref_g = chart
+            return problem.residual(X, p_val, mesh_seg, u_ref_gauss=u_ref_g, dot_u_ref=dot_u_ref)
 
-        def solver_factory(dot_u_ref: jax.Array) -> BorderedOperatorSolver:
+        def solver_factory(chart: tuple[jax.Array, jax.Array]) -> BorderedOperatorSolver:
+            dot_u_ref, _ = chart
             return make_collocation_bordered_solver(problem, mesh_seg, dot_u_ref)
 
         w_arc_seg = (
