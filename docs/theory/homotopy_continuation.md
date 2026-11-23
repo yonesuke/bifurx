@@ -68,6 +68,8 @@ $$M(z) = \begin{pmatrix} \nabla_u H(u, p) & \nabla_p H(u, p) \\ c^T & d \end{pma
 
 remains nonsingular because $\nabla_p H \notin \operatorname{Range}(\nabla_u H)$ and $c = \dot{u}_k$ has a nonzero component along $\ker(\nabla_u H)$.
 
+![Keller pseudo-arclength continuation and Padé (2,1) predictor geometry around a fold](figures/keller_arclength_geometry.png)
+
 ---
 
 ## 2. Scale-Invariant Weighted Norm (`bifurx.homotopy.norm`)
@@ -222,6 +224,8 @@ falling back to $\gamma_{\text{rej}} \Delta s_k$ (default $0.25 \Delta s_k$) if 
 ## 7. Pure-JAX Path-Tracking Architecture (`bifurx.homotopy.tracker`)
 
 All components above assemble into a single XLA-compilable loop in `track_arclength_scan` using `jax.lax.scan`. Starting from the carry state $(u_k, p_k, \tau_k, \text{chart}_k, \Delta s_k, w_k, \omega_k)$, each step executes five stages in sequence:
+
+![Single XLA-compiled step inside track_arclength_scan with Timme accept/reject control](figures/homotopy_tracker_flow.png)
 
 1. **Predictor**: Extrapolate $(u_{\text{pred}}, p_{\text{pred}})$ using Euler tangent or Padé $(2,1)$ rational prediction.
 2. **Weighted Norm Update**: Refresh the scale-invariant coordinate weights $w_k$.

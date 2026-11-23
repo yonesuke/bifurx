@@ -223,6 +223,8 @@ $$\operatorname{spec}(M) = \left\{ 1, \quad 1, \quad \lambda_u, \quad \frac{1}{\
 - **Hyperbolic Saddle Pair**: $\lambda_u \approx 2600 \gg 1$ and $\lambda_s = 1/\lambda_u \approx 0.00038 \ll 1$. These generate the 2D invariant unstable manifold $W^u$ and stable manifold $W^s$—the famous "interplanetary transport tubes".
 - **Elliptic Transverse Pair**: $\lambda_{5,6} = e^{\pm i \nu_z}$ with $|\lambda_{5,6}| \equiv 1.000000$. These correspond to out-of-plane vertical perturbations and define a 2D center manifold $\mathcal{W}^c$ surrounding the periodic orbit!
 
+![CR3BP synodic Lagrange points and symplectic Floquet spectrum of a planar L1 Lyapunov orbit](figures/cr3bp_symplectic_kam.png)
+
 ---
 
 ## 6. KAM Torus Theory in Astrodynamics

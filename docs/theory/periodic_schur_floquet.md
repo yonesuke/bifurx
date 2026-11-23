@@ -52,6 +52,8 @@ $$R_{N-1} R_{N-2} \cdots R_0 = Q_{N-1}^T \left(M_{N-1} M_{N-2} \cdots M_0\right)
 
 the product $R_{N-1} \cdots R_0$ is **orthogonally similar** to $M$, so its eigenvalues are identical to the Floquet multipliers—and they can be read directly from the $1 \times 1$ and $2 \times 2$ diagonal blocks of the factors $\{R_k\}$ without ever multiplying the full $n \times n$ matrices!
 
+![Bojanczyk-Golub-Van Dooren Periodic Real Schur decomposition and log-space eigenvalue extraction](figures/periodic_schur_cycle.png)
+
 ---
 
 ## 3. Pure-JAX Algorithm in `bifurx.bvp.floquet`

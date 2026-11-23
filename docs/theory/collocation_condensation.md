@@ -9,6 +9,8 @@ In `bifurx.bvp.condensation`, this cost is reduced to **strictly linear in $N$**
 1. **Stage 1 (de Boor–Swartz Block Condensation)**: Parallel elimination of all interior Gauss-stage unknowns $\Delta u_{k, 1:m}$ on every subinterval via `jax.vmap(lu_factor)`.
 2. **Stage 2 (Orthogonal Cyclic Block-QR Elimination)**: Numerically stable $\mathcal{O}(N n^3)$ elimination of the condensed cyclic block-bidiagonal + border system via `jax.lax.scan`, following Wright (1992) and Ascher–Mattheij–Russell (1995).
 
+![Two-stage block condensation and O(N n^3) orthogonal cyclic block-QR elimination](figures/collocation_condensation_blocks.png)
+
 ---
 
 ## 1. Structure of the Linearized Collocation System

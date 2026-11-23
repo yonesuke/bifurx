@@ -57,6 +57,8 @@ Isochrons form an invariant foliation of the entire basin of attraction $\mathca
 
 $$\Phi_t(\mathcal{I}(\theta_0)) = \mathcal{I}((\theta_0 + \omega t) \bmod 2\pi)$$
 
+![Limit cycle, isochron foliation, and infinitesimal phase response geometry](figures/isochrons_prc_geometry.png)
+
 ---
 
 ## 2. Weakly Perturbed Oscillators & The iPRC
@@ -372,6 +374,8 @@ In nonlinear systems, changing a physical parameter $p$ (e.g. external stimulus 
 3. The sensitivity waveform $Z(t; p)$.
 
 `bifurx` integrates the block-condensed BVP adjoint solver directly into its **pseudo-arclength continuation engine** (`continuation_iprc`):
+
+![Coupled periodic-orbit continuation and one-shot block-condensed adjoint iPRC pipeline](figures/iprc_continuation_pipeline.png)
 
 1. **Initialize at $p_0$**: Converge the periodic orbit $(u_0^*, T_0)$ via Gauss-Legendre collocation and compute $Z_0(\theta)$ with a single block-condensed linear adjoint solve.
 2. **Predict & Correct**: Advance along the solution branch using the tangent predictor $(\dot{u}, \dot{T}, \dot{p})$ and Newton–Gauss corrector to obtain $(u_k^*, T_k, p_k)$.

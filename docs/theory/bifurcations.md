@@ -81,6 +81,8 @@ Once located, `compute_first_lyapunov_coefficient` evaluates the **first Lyapuno
 - $l_1 > 0$: **subcritical Hopf** (unstable limit cycle bifurcates).
 - $l_1 = 0$: **Generalized Hopf / Bautin (GH)** codimension-2 point.
 
+![Critical eigenvalue crossings for LP, BP, and Hopf bifurcations and ABE branch switching](figures/bifurcation_eigenvalues_abe.png)
+
 ---
 
 ## 2. Branch Switching via the Algebraic Bifurcation Equation (ABE)

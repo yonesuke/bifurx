@@ -22,6 +22,8 @@ The table below maps each dynamical-systems module in `bifurx` directly onto the
 | **Periodic Orbits (Limit Cycles)** | `bifurx.bvp` | $U = (u_{\text{mesh}}, u_{\text{gauss}}, T)$, $\lambda = p$ | Phase reference $\dot{u}_{\text{ref}}$ | de Boor-Swartz Block Condensation | Monodromy matrix $M$ & Floquet multipliers (LPC, PD, NS) |
 | **iPRC Continuation** | `bifurx.prc` | Periodic orbit $U$ + linear adjoint $Z(t)$ | Phase reference $\dot{u}_{\text{ref}}$ | Condensed BVP + Linear Adjoint Solve | Peak sensitivity & zero crossings |
 
+![Unified architecture of bifurx built on the standalone bifurx.homotopy core](figures/bifurx_architecture.png)
+
 ---
 
 ## 2. Equilibrium Continuation & Codim-1 Bifurcations (`bifurx.continuation`, `bifurx.bifurcations`)
