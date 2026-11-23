@@ -516,6 +516,7 @@ def continue_periodic_orbit(
     remesh_interval: int | None = None,
     mesh_alpha: float = 1.0,
     mesh_damping: float = 0.7,
+    period_bounds: tuple[float, float] | None = None,
 ) -> list[PeriodicOrbitResult]:
     """Continue a family of periodic orbits along parameter p via `bifurx.homotopy` (#15)."""
     if param_mode not in ("natural", "arclength"):
@@ -531,6 +532,13 @@ def continue_periodic_orbit(
     if remesh_interval is not None and remesh_interval <= 0:
         msg = f"remesh_interval must be positive, got {remesh_interval}."
         raise ValueError(msg)
+    if period_bounds is not None:
+        t_lo_val, t_hi_val = float(period_bounds[0]), float(period_bounds[1])
+        if t_lo_val < 0.0 or t_lo_val >= t_hi_val:
+            msg = f"Invalid period_bounds={period_bounds}. Require 0 <= T_min < T_max."
+            raise ValueError(msg)
+    else:
+        t_lo_val, t_hi_val = 0.0, float("inf")
 
     cont_opts = options if isinstance(options, ContinuationOptions) else ContinuationOptions()
     coll_opts = (
@@ -706,6 +714,14 @@ def continue_periodic_orbit(
             ok = ok & (_orbit_amplitude(u_m) >= min_amp_val)
         return ok
 
+    if period_bounds is not None:
+
+        def stop_fn(X: jax.Array, _p: jax.Array) -> jax.Array:
+            T_val = jnp.squeeze(X[-1])
+            return (T_val <= t_lo_val) | (T_val >= t_hi_val)
+    else:
+        stop_fn = None
+
     p_target_arg = None if param_mode == "arclength" else p_e
     cur_mesh = init_mesh
     cur_X = problem.pack_vars(initial_orbit.u_mesh, initial_orbit.u_gauss, initial_orbit.period)
@@ -751,6 +767,7 @@ def continue_periodic_orbit(
             arclength_weights=w_arc_seg,
             chart_fn=chart_fn,
             accept_fn=accept_fn,
+            stop_fn=stop_fn,
             tol=tol_val,
             step_tol=tol_val,
             rel_tol=rel_tol_val,
@@ -808,9 +825,11 @@ def continue_periodic_orbit(
         last_idx = kept_indices[-1]
         last_orb = results[-1]
         last_p = float(scan_res.p[last_idx])
+        last_T = float(last_orb.period)
         if (
             last_p < p_lo
             or last_p > p_hi
+            or (period_bounds is not None and (last_T <= t_lo_val or last_T >= t_hi_val))
             or (param_mode == "natural" and abs(last_p - p_e) <= 1e-12)
         ):
             break
