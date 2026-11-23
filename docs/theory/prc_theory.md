@@ -294,17 +294,7 @@ In computational neuroscience, neurons are classified according to Hodgkin's 194
 | **Computational Role** | **Integrator** (accumulates synaptic inputs) | **Resonator** (selectively filters input frequencies) |
 | **Synchronization** | Prone to clustering / slow entrainment | Robust in-phase or anti-phase locking |
 
-```
-Type I iPRC (Integrator, SNIC):          Type II iPRC (Resonator, Hopf):
-  Z(θ)                                     Z(θ)
-   ▲                                        ▲       Advance
-   │       ╭───╮                            │     ╭───╮
-   │      ╭╯   ╰╮                           │    ╭╯   ╰╮
-   │     ╭╯     ╰╮                          ┼───╭╯─────┴─────╮───► θ
-   │    ╭╯       ╰╮                         │   │   Delay    ╰╮
-   └────┴─────────┴───► θ                   │   ╰─────────────╯
-      Always Advances (> 0)                     Biphasic (Advance & Delay)
-```
+![Canonical Type I (monophasic, SNIC) vs. Type II (biphasic, Hopf) iPRC waveforms](figures/prc_type1_vs_type2.png)
 
 ### 6.1 Type I Excitability (The Canonical Theta Model)
 Near a SNIC bifurcation, the dynamics along the center manifold reduce to the Ermentrout-Kopell canonical model:
@@ -381,17 +371,11 @@ In nonlinear systems, changing a physical parameter $p$ (e.g. external stimulus 
 2. The oscillation period $T(p)$ and frequency $\omega(p)$.
 3. The sensitivity waveform $Z(t; p)$.
 
-`bifurx` integrates the BVP adjoint solver into its **pseudo-arclength continuation engine**:
+`bifurx` integrates the block-condensed BVP adjoint solver directly into its **pseudo-arclength continuation engine** (`continuation_iprc`):
 
-```
-p_0 ────► Solve Orbit (u_0, T_0) ────► Exact Adjoint Solve Z_0
- │
- ▼ Tangent Predictor (du/ds, dT/ds, dp/ds)
-p_1 ────► Newton-Gauss Corrector ────► Exact Adjoint Solve Z_1
- │
- ▼
-... ────► Full Manifold of iPRCs: Z(θ; p)
-```
+1. **Initialize at $p_0$**: Converge the periodic orbit $(u_0^*, T_0)$ via Gauss-Legendre collocation and compute $Z_0(\theta)$ with a single block-condensed linear adjoint solve.
+2. **Predict & Correct**: Advance along the solution branch using the tangent predictor $(\dot{u}, \dot{T}, \dot{p})$ and Newton–Gauss corrector to obtain $(u_k^*, T_k, p_k)$.
+3. **Evaluate Adjoint & Repeat**: Solve the linear adjoint BVP at $(u_k^*, T_k, p_k)$ to obtain $Z_k(\theta)$, tracing the complete manifold of phase sensitivity curves $Z(\theta; p)$.
 
 This reveals:
 - **Amplitude scaling** near onset bifurcations.
