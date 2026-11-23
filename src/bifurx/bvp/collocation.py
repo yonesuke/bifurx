@@ -419,6 +419,35 @@ def solve_periodic_orbit(
     )
 
 
+def periodic_orbit_arclength_weights(
+    problem: CollocationProblem,
+    mesh: ArrayLike,
+    period_weight: float = 1.0,
+    param_weight: float = 1.0,
+) -> jax.Array:
+    """Build exact Gauss-Legendre L2[0, 1] arclength weights for `[u_mesh, u_gauss, T, p]`."""
+    if period_weight < 0.0:
+        msg = f"period_weight must be non-negative, got {period_weight}."
+        raise ValueError(msg)
+    if param_weight < 0.0:
+        msg = f"param_weight must be non-negative, got {param_weight}."
+        raise ValueError(msg)
+    mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
+    h_arr = mesh_arr[1:] - mesh_arr[:-1]
+    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
+    w_mesh = jnp.zeros(N * n, dtype=jnp.float64)
+    w_gauss = jnp.broadcast_to(
+        (h_arr[:, None] * problem.weights[None, :])[:, :, None], (N, m, n)
+    ).ravel()
+    return jnp.concatenate(
+        [
+            w_mesh,
+            w_gauss,
+            jnp.array([float(period_weight) ** 2, float(param_weight) ** 2], dtype=jnp.float64),
+        ]
+    )
+
+
 def continue_periodic_orbit(
     problem: CollocationProblem,
     initial_orbit: PeriodicOrbitResult,
@@ -430,6 +459,7 @@ def continue_periodic_orbit(
     max_steps: int | None = None,
     param_mode: str = "natural",
     param_weight: float | None = None,
+    period_weight: float | None = None,
     non_trivial: bool = True,
     tol: float | None = None,
     max_iters: int | None = None,
@@ -491,8 +521,6 @@ def continue_periodic_orbit(
 
     mesh_arr = jnp.asarray(initial_orbit.mesh, dtype=jnp.float64)
     h_arr = mesh_arr[1:] - mesh_arr[:-1]
-    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
-    n_state = N * (m + 1) * n
     X0 = problem.pack_vars(initial_orbit.u_mesh, initial_orbit.u_gauss, initial_orbit.period)
     p0_arr = jnp.asarray(p_s, dtype=jnp.float64)
 
@@ -516,12 +544,12 @@ def continue_periodic_orbit(
 
     if param_mode == "arclength":
         p_w = 1.0 if param_weight is None else float(param_weight)
-        T0_val = float(initial_orbit.period)
-        w_arc = jnp.concatenate(
-            [
-                jnp.full(n_state, 1.0 / (N * (m + 1)), dtype=jnp.float64),
-                jnp.array([1.0 / (1.0 + T0_val**2), p_w**2], dtype=jnp.float64),
-            ]
+        t_w = float(coll_opts.period_weight if period_weight is None else period_weight)
+        w_arc = periodic_orbit_arclength_weights(
+            problem,
+            mesh_arr,
+            period_weight=t_w,
+            param_weight=p_w,
         )
         p_target_arg: float | None = None
     else:

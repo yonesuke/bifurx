@@ -89,7 +89,7 @@ class ContinuationOptions(_OptionsBase):
 class CollocationOptions(_OptionsBase):
     """Options for boundary value problem (BVP) orthogonal collocation."""
 
-    _child_fields: ClassVar[tuple[str, ...]] = ("eps", "tol", "min_amplitude")
+    _child_fields: ClassVar[tuple[str, ...]] = ("eps", "tol", "min_amplitude", "period_weight")
     _aux_fields: ClassVar[tuple[str, ...]] = ("num_intervals", "num_gauss_points", "max_iters")
 
     num_intervals: int = 25
@@ -98,6 +98,7 @@ class CollocationOptions(_OptionsBase):
     tol: float = 1e-8
     max_iters: int = 25
     min_amplitude: float = 1e-4
+    period_weight: float = 1.0
 
 
 def resolve_continuation_options(
