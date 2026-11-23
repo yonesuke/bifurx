@@ -16,6 +16,7 @@ from bifurx.continuation.arclength import (
     continuation,
     continuation_scan,
 )
+from bifurx.homotopy import TrackerParameters, WeightedNormOptions
 from bifurx.options import (
     CollocationOptions,
     ContinuationOptions,
@@ -124,10 +125,14 @@ def test_options_pytree_registration():
     cont = ContinuationOptions(
         ds=0.02,
         max_steps=50,
+        predictor="pade21",
         newton=NewtonOptions(tol=1e-6, rel_tol=1e-7, max_iters=20),
+        tracker=TrackerParameters(a=0.2, beta_tau=0.5),
+        norm=WeightedNormOptions(scale_min=1e-3),
         bif_p_tol=1e-5,
         bif_u_tol=1e-4,
     )
+    assert cont.replace(predictor="tangent").predictor == "tangent"
     leaves, treedef = jax.tree_util.tree_flatten(cont)
     rebuilt = jax.tree_util.tree_unflatten(treedef, leaves)
     assert rebuilt == cont

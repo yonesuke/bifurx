@@ -6,6 +6,8 @@ from typing import Any, ClassVar, Self
 
 import jax
 
+from bifurx.homotopy import TrackerParameters, WeightedNormOptions
+
 
 class _OptionsBase:
     """Shared PyTree serialization and immutable update methods for option dataclasses."""
@@ -55,6 +57,8 @@ class ContinuationOptions(_OptionsBase):
         "ds_max",
         "direction",
         "newton",
+        "tracker",
+        "norm",
         "bif_p_tol",
         "bif_u_tol",
     )
@@ -62,6 +66,7 @@ class ContinuationOptions(_OptionsBase):
         "max_steps",
         "adaptive_step",
         "detect_bifurcations",
+        "predictor",
     )
 
     ds: float = 0.05
@@ -70,8 +75,11 @@ class ContinuationOptions(_OptionsBase):
     max_steps: int = 100
     adaptive_step: bool = False
     detect_bifurcations: bool = True
+    predictor: str = "tangent"
     direction: float = 1.0
     newton: NewtonOptions = field(default_factory=NewtonOptions)
+    tracker: TrackerParameters = field(default_factory=TrackerParameters)
+    norm: WeightedNormOptions = field(default_factory=WeightedNormOptions)
     bif_p_tol: float = 1e-4
     bif_u_tol: float = 1e-3
 
@@ -104,6 +112,9 @@ def resolve_continuation_options(
     direction: Any = None,
     adaptive_step: bool | None = None,
     detect_bifurcations: bool | None = None,
+    predictor: str | None = None,
+    tracker: TrackerParameters | None = None,
+    norm: WeightedNormOptions | None = None,
     bif_p_tol: float | None = None,
     bif_u_tol: float | None = None,
     newton_tol: float | None = None,
@@ -165,6 +176,9 @@ def resolve_continuation_options(
             ("direction", direction),
             ("adaptive_step", adaptive_step),
             ("detect_bifurcations", detect_bifurcations),
+            ("predictor", predictor if predictor is not None else extra.get("predictor")),
+            ("tracker", tracker if tracker is not None else extra.get("tracker")),
+            ("norm", norm if norm is not None else extra.get("norm")),
             ("bif_p_tol", bif_p_tol if bif_p_tol is not None else extra.get("bif_p_tol")),
             ("bif_u_tol", bif_u_tol if bif_u_tol is not None else extra.get("bif_u_tol")),
         )

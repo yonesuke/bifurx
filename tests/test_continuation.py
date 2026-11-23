@@ -363,3 +363,45 @@ def test_branch_point_no_spurious_discontinuity_jumps():
     )
     bps2 = res2.get_bifurcations("BP")
     assert len(bps2) == 0, f"Expected 0 BPs during complexification, got {bps2}"
+
+
+def test_continuation_pade21_predictor():
+    """Verify continuation with predictor='pade21' accurately detects fold and Hopf points."""
+
+    def f_fold(u, p):
+        return jnp.array([p - u[0] ** 2])
+
+    prob_fold = BifurcationProblem(f_fold, u0=[1.0], p0=1.0)
+    res_fold = continuation(
+        prob_fold,
+        ds=0.05,
+        max_steps=30,
+        direction=-1.0,
+        predictor="pade21",
+        branch_name="FoldPade21",
+    )
+    lps_fold = res_fold.get_bifurcations("LP")
+    assert len(lps_fold) >= 1
+    assert abs(float(lps_fold[0].p)) < 1e-6
+
+    def f_ab(u, p1):
+        u1, u2 = u[0], u[1]
+        e = jnp.exp(u2)
+        return jnp.array([-u1 + p1 * (1.0 - u1) * e, -u2 + p1 * 14.0 * (1.0 - u1) * e - 2.0 * u2])
+
+    prob_ab = BifurcationProblem(f_ab, u0=[0.0, 0.0], p0=0.0)
+    res_ab = continuation(
+        prob_ab,
+        ds=0.03,
+        ds_max=0.05,
+        max_steps=140,
+        predictor="pade21",
+        branch_name="DemoABPade21",
+    )
+    lps = res_ab.get_bifurcations("LP")
+    hbs = res_ab.get_bifurcations("HB")
+    assert len(lps) == 2
+    assert abs(lps[0].p - 0.1057390) < 1e-4
+    assert abs(lps[1].p - 0.08893185) < 1e-4
+    assert len(hbs) >= 1
+    assert abs(hbs[0].p - 0.1308998) < 1e-3

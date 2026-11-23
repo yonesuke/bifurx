@@ -11,10 +11,9 @@ from bifurx.bifurcations.test_funcs import (
     evaluate_point_diagnostics,
     refine_bifurcation_point,
 )
+from bifurx.homotopy.tracker import compute_tangent, track_arclength_scan
 from bifurx.options import ContinuationOptions, resolve_continuation_options
 from bifurx.problem import BifurcationProblem
-from bifurx.solvers.bordered import solve_bordered_system
-from bifurx.solvers.newton import bordered_newton_solve
 
 
 @dataclass
@@ -85,20 +84,14 @@ def compute_initial_tangent(
     initial_tangent: jax.Array | None = None,
 ) -> jax.Array:
     """Compute or normalize the initial tangent vector (dot{u}, dot{p}) at starting equilibrium."""
-    if initial_tangent is not None:
-        tau = jnp.asarray(initial_tangent, dtype=jnp.float64)
-        norm_val = jnp.linalg.norm(tau)
-        return jnp.where(norm_val > 1e-12, tau / norm_val, tau)
-
-    u0_arr = jnp.asarray(u0, dtype=jnp.float64)
-    Ju = problem.jacobian_u(u0_arr, p0)
-    Jp = problem.jacobian_p(u0_arr, p0)
-    J = jnp.hstack([Ju, Jp.reshape(-1, 1)])
-    _, _, vh = jnp.linalg.svd(J)
-    tau = vh[-1, :]
-    tau = tau * jnp.where(tau[-1] * direction < 0, -1.0, 1.0)
-    norm_val = jnp.linalg.norm(tau)
-    return jnp.where(norm_val > 1e-12, tau / norm_val, tau)
+    return compute_tangent(
+        jac_u_fn=problem.jacobian_u,
+        jac_p_fn=problem.jacobian_p,
+        u0=jnp.asarray(u0, dtype=jnp.float64),
+        p0=p0,
+        direction=direction,
+        initial_tangent=initial_tangent,
+    )
 
 
 def _resolve_param_bounds(
@@ -128,6 +121,7 @@ def continuation_scan(
     newton_max_iters: int | None = None,
     param_bounds: tuple[float, float] | jax.Array | None = None,
     adaptive_step: bool | None = None,
+    predictor: str | None = None,
     solver_method: str | None = None,
     options: ContinuationOptions | None = None,
     max_steps: int | None = None,
@@ -144,6 +138,7 @@ def continuation_scan(
         n_steps=n_steps,
         direction=direction,
         adaptive_step=adaptive_step,
+        predictor=predictor,
         bif_p_tol=bif_p_tol,
         bif_u_tol=bif_u_tol,
         newton_tol=newton_tol,
@@ -153,94 +148,50 @@ def continuation_scan(
         solver_method=solver_method,
     )
 
-    n = problem.dim
     u_cur = problem.u0 if u0 is None else jnp.asarray(u0, dtype=jnp.float64)
     p_cur = jnp.squeeze(jnp.asarray(problem.p0 if p0 is None else p0, dtype=jnp.float64))
-    ds_cur = jnp.asarray(opts.ds, dtype=jnp.float64)
-    ds_min_val = jnp.asarray(opts.ds_min, dtype=jnp.float64)
-    ds_max_val = jnp.asarray(opts.ds_max, dtype=jnp.float64)
-    adaptive_step_val = bool(opts.adaptive_step)
-    n_steps_val = int(opts.max_steps)
-    newton_opts = opts.newton
-
     tau_cur = compute_initial_tangent(
         problem, u_cur, p_cur, direction=opts.direction, initial_tangent=initial_tangent
     )
     p_min, p_max = _resolve_param_bounds(problem, param_bounds)
-    init_carry = (u_cur, p_cur, tau_cur, ds_cur, jnp.bool_(True))
 
-    def step_fn(carry, _):
-        u, p, tau, cur_ds, is_active = carry
-
-        u_pred = u + cur_ds * tau[:n]
-        p_pred = p + cur_ds * tau[-1]
-
-        res = bordered_newton_solve(
-            problem=problem,
-            u_init=u_pred,
-            p_init=p_pred,
-            u_prev=u,
-            p_prev=p,
-            tau_prev=tau,
-            ds=cur_ds,
-            options=newton_opts,
-        )
-
-        u_cand, p_cand = res.u, res.p
-        converged_step = is_active & res.converged
-
-        Ju_cand = problem.jacobian_u(u_cand, p_cand)
-        Jp_cand = problem.jacobian_p(u_cand, p_cand)
-        sol_tau = solve_bordered_system(
-            A=Ju_cand,
-            b=Jp_cand,
-            c=tau[:n],
-            d=tau[-1],
-            f=jnp.zeros(n, dtype=jnp.float64),
-            g=1.0,
-            method=newton_opts.solver_method,
-        )
-        tau_cand = sol_tau.z
-        tau_cand_norm = jnp.linalg.norm(tau_cand)
-        tau_cand = jnp.where(tau_cand_norm > 1e-12, tau_cand / tau_cand_norm, tau)
-        tau_cand = jnp.where(jnp.dot(tau_cand, tau) < 0, -tau_cand, tau_cand)
-
-        test_funcs, is_stable = evaluate_point_diagnostics(Ju_cand, tau_cand, Jp=Jp_cand)
-
-        u_next = jnp.where(converged_step, u_cand, u)
-        p_next = jnp.where(converged_step, p_cand, p)
-        tau_next = jnp.where(converged_step, tau_cand, tau)
-        in_bounds = (p_next >= p_min) & (p_next <= p_max)
-        is_active_next = jnp.where(converged_step, in_bounds, is_active)
-
-        if adaptive_step_val:
-            ds_inc = jnp.minimum(cur_ds * 1.5, ds_max_val)
-            ds_dec = jnp.maximum(cur_ds * 0.5, ds_min_val)
-            ds_next = jnp.where(
-                res.converged,
-                jnp.where(
-                    res.iterations <= 3, ds_inc, jnp.where(res.iterations >= 7, ds_dec, cur_ds)
-                ),
-                ds_dec,
-            )
-        else:
-            ds_next = cur_ds
-
-        carry_next = (u_next, p_next, tau_next, ds_next, is_active_next)
-        output_step = (
-            u_next,
-            p_next,
-            tau_next,
-            test_funcs,
-            converged_step,
-            cur_ds,
-            res.iterations,
-            is_stable,
-        )
-        return carry_next, output_step
-
-    _, outputs = jax.lax.scan(step_fn, init_carry, None, length=n_steps_val)
-    return ContinuationScanResult(*outputs)
+    scan_res = track_arclength_scan(
+        residual_fn=problem.residual,
+        jac_u_fn=problem.jacobian_u,
+        jac_p_fn=problem.jacobian_p,
+        u0=u_cur,
+        p0=p_cur,
+        tau0=tau_cur,
+        ds=opts.ds,
+        ds_min=opts.ds_min,
+        ds_max=opts.ds_max,
+        n_steps=int(opts.max_steps),
+        p_min=p_min,
+        p_max=p_max,
+        adaptive_step=bool(opts.adaptive_step),
+        predictor=opts.predictor,
+        tol=opts.newton.tol,
+        step_tol=opts.newton.step_tol,
+        rel_tol=opts.newton.rel_tol,
+        max_newton_iters=opts.newton.max_iters,
+        solver_method=opts.newton.solver_method,
+        tracker_params=opts.tracker,
+        norm_options=opts.norm,
+        step_observer_fn=lambda _u, _p, tau_c, Ju_c, Jp_c: evaluate_point_diagnostics(
+            Ju_c, tau_c, Jp=Jp_c
+        ),
+    )
+    test_funcs, is_stable = scan_res.observer
+    return ContinuationScanResult(
+        u=scan_res.u,
+        p=scan_res.p,
+        tangents=scan_res.tangents,
+        test_funcs=test_funcs,
+        converged=scan_res.converged,
+        step_sizes=scan_res.step_sizes,
+        iterations=scan_res.iterations,
+        stability=is_stable,
+    )
 
 
 def continuation(
@@ -260,6 +211,7 @@ def continuation(
     detect_bifurcations: bool | None = None,
     param_bounds: tuple[float, float] | None = None,
     adaptive_step: bool | None = None,
+    predictor: str | None = None,
     branch_name: str = "Branch",
     verbose: bool = False,
     options: ContinuationOptions | None = None,
@@ -278,6 +230,7 @@ def continuation(
         direction=direction,
         adaptive_step=adaptive_step,
         detect_bifurcations=detect_bifurcations,
+        predictor=predictor,
         bif_p_tol=bif_p_tol,
         bif_u_tol=bif_u_tol,
         newton_tol=newton_tol,
@@ -402,10 +355,10 @@ def continuation(
 
     num_conv = int(jnp.sum(scan_res.converged))
     p_min, p_max = _resolve_param_bounds(problem, param_bounds)
-    if num_conv == max_steps:
-        stop_reason = "max_steps"
-    elif (p_full[-1] < p_min) or (p_full[-1] > p_max):
+    if (p_full[-1] < p_min) or (p_full[-1] > p_max):
         stop_reason = "bounds"
+    elif opts.max_steps == 0 or bool(scan_res.converged[-1]):
+        stop_reason = "max_steps"
     else:
         stop_reason = "corrector_failed"
 

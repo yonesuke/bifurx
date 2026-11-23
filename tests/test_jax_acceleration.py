@@ -215,3 +215,36 @@ def test_benchmark_jit_scan_speedup():
     assert speedup > 5.0, (
         f"Expected speedup > 5x, got {speedup:.1f}x (py={t_py * 1e3:.1f}ms, scan={t_scan * 1e3:.2f}ms)"
     )
+
+
+def test_continuation_scan_pade21_jit_and_vmap():
+    """Verify continuation_scan with predictor='pade21' supports jax.jit and jax.vmap."""
+    prob_ab = BifurcationProblem(f_ab, u0=[0.0, 0.0], p0=0.0)
+    res_ab = jax.jit(
+        lambda: continuation_scan(
+            prob_ab,
+            u0=[0.0, 0.0],
+            p0=0.0,
+            n_steps=120,
+            ds=0.03,
+            ds_max=0.05,
+            adaptive_step=True,
+            predictor="pade21",
+        )
+    )()
+    assert bool(jnp.all(res_ab.converged))
+    assert float(jnp.max(res_ab.p)) > 0.13
+
+    prob_pf = BifurcationProblem(f_pitchfork, u0=[0.0], p0=1.0)
+    p_batch = jnp.linspace(0.5, 2.0, 16)
+    u_batch = jnp.sqrt(p_batch)[:, None]
+    batch_res = jax.jit(
+        jax.vmap(
+            lambda u, p: continuation_scan(
+                prob_pf, u0=u, p0=p, n_steps=20, ds=0.03, predictor="pade21"
+            )
+        )
+    )(u_batch, p_batch)
+    assert batch_res.u.shape == (16, 20, 1)
+    assert bool(jnp.all(batch_res.converged))
+    assert jnp.allclose(batch_res.u[:, :, 0] ** 2, batch_res.p, atol=1e-4)

@@ -43,6 +43,7 @@ from bifurx.continuation.arclength import (
     continuation,
     continuation_scan,
 )
+from bifurx.homotopy import TrackerParameters, WeightedNormOptions
 from bifurx.options import (
     CollocationOptions,
     ContinuationOptions,
@@ -83,6 +84,8 @@ __all__ = [
     "NewtonOptions",
     "NewtonResult",
     "PeriodicOrbitResult",
+    "TrackerParameters",
+    "WeightedNormOptions",
     "bordered_newton_solve",
     "collocation_matrices",
     "compute_floquet_multipliers",

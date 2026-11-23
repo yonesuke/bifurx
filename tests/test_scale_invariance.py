@@ -204,3 +204,21 @@ def test_extract_leading_hopf_pair():
     assert bool(has_pair_j)
     assert abs(float(lead_r_j) - 0.2) < 1e-10
     assert abs(float(lead_i_j) - 3.0) < 1e-10
+
+
+def test_continuation_mixed_scale_components():
+    """Verify WeightedNorm handles 8-order-of-magnitude scale disparities across components."""
+
+    def f_mixed(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:
+        # u[0] ~ 1e4 (fold at u0=1e4, p=0), u[1] ~ 1e-4 (linearly coupled to u0)
+        v0 = u[0] - 1e4
+        return jnp.array([p - v0**2, 1e8 * u[1] - (1e4 + v0)])
+
+    prob = BifurcationProblem(f_mixed, u0=[1e4 + 1.0, (1e4 + 1.0) * 1e-8], p0=1.0)
+    res = continuation(prob, ds=0.05, max_steps=30, direction=-1.0, adaptive_step=True)
+    assert res.num_points >= 15
+    lps = res.get_bifurcations("LP")
+    assert len(lps) == 1
+    assert abs(float(lps[0].p)) < 1e-5
+    assert abs(float(lps[0].u[0]) - 1e4) < 1e-2
+    assert abs(float(lps[0].u[1]) - 1e-4) < 1e-8
