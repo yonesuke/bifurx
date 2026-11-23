@@ -85,11 +85,12 @@ def correct_arclength_step(
     init_state = (
         u_0,
         p_0,
+        f_0,
+        arc_0,
         jnp.int32(0),
         conv_0,
         jnp.bool_(False),
         res_norm_0,
-        zero_f,
         zero_f,
         zero_f,
         init_omega,
@@ -98,14 +99,14 @@ def correct_arclength_step(
     )
 
     def cond_fn(state: tuple[jax.Array, ...]) -> jax.Array:
-        _u, _p, it, conv, aborted, _rn, _sw, _psw, _dz0, _om, _th, _ab = state
+        _u, _p, _f, _arc, it, conv, aborted, _rn, _sw, _dz0, _om, _th, _ab = state
         return (~conv) & (~aborted) & (it < max_iters)
 
     def body_fn(state: tuple[jax.Array, ...]) -> tuple[jax.Array, ...]:
-        u, p, it, _conv, _aborted, _rn, prev_sw, _pprev, norm_dz0, omega, theta, a_bar = state
+        u, p, f_val, arc_res, it, _conv, _aborted, _rn, prev_sw, norm_dz0, omega, theta, a_bar = (
+            state
+        )
 
-        f_val = residual_fn(u, p)
-        arc_res = jnp.dot(tau_u, u - u_p) + tau_p * (p - p_p) - ds_val
         Ju = jac_u_fn(u, p)
         Jp = jac_p_fn(u, p)
 
@@ -170,15 +171,18 @@ def correct_arclength_step(
 
         u_next = jnp.where(is_valid, u_cand, u)
         p_next = jnp.where(is_valid, p_cand, p)
+        f_out = jnp.where(is_valid, f_next, f_val)
+        arc_out = jnp.where(is_valid, arc_next, arc_res)
         return (
             u_next,
             p_next,
+            f_out,
+            arc_out,
             it + jnp.int32(1),
             conv_next,
             aborted_next,
             res_norm_next,
             step_norm_w,
-            prev_sw,
             norm_dz0_next,
             omega_next,
             theta_next,
@@ -189,12 +193,13 @@ def correct_arclength_step(
     (
         u_fin,
         p_fin,
+        _f_fin,
+        _arc_fin,
         it_fin,
         conv_fin,
         aborted_fin,
         res_fin,
         step_fin,
-        _prev_sw,
         dz0_fin,
         omega_fin,
         theta_fin,
