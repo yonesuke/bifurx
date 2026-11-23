@@ -1,0 +1,9 @@
+# Exclude demo notebooks, documentation, and diagram sources from GitHub Linguist language stats
+notebooks/** linguist-documentation
+*.ipynb linguist-documentation
+docs/** linguist-documentation
+*.tex linguist-documentation
+*.excalidraw linguist-generated=true
+
+# Mark lockfiles as generated so they are collapsed in PR diffs
+uv.lock linguist-generated=true
