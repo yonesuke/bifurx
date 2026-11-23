@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple
 
 import jax
@@ -147,7 +147,7 @@ class CollocationProblem:
         num_intervals: int | None = None,
         num_gauss_points: int | None = None,
         options: CollocationOptions | None = None,
-        period_shift: ArrayLike | None = None,
+        period_shift: ArrayLike | Sequence[float] | None = None,
         **kwargs: Any,
     ) -> None:
         base_opts = CollocationOptions() if options is None else options
@@ -371,7 +371,7 @@ def initialize_from_hopf(
 
 def branch_from_hopf(
     problem: CollocationProblem,
-    u_hopf: ArrayLike,
+    u_hopf: ArrayLike | Sequence[float],
     p_hopf: float | jax.Array,
     ds: float | jax.Array = 0.05,
     period_weight: float | None = None,
