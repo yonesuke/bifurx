@@ -72,6 +72,7 @@ def test_options_default_values():
     assert colloc.tol == 1e-8
     assert colloc.max_iters == 25
     assert colloc.min_amplitude == 1e-4
+    assert colloc.period_weight == 1.0
 
 
 def test_options_immutability():
@@ -114,10 +115,12 @@ def test_options_replace_method():
     assert cont1.newton.rel_tol == 1e-6
 
     colloc0 = CollocationOptions()
-    colloc1 = colloc0.replace(num_intervals=10, min_amplitude=1e-3)
+    colloc1 = colloc0.replace(num_intervals=10, min_amplitude=1e-3, period_weight=0.25)
     assert colloc0.num_intervals == 25
+    assert colloc0.period_weight == 1.0
     assert colloc1.num_intervals == 10
     assert colloc1.min_amplitude == 1e-3
+    assert colloc1.period_weight == 0.25
 
 
 def test_options_pytree_registration():
@@ -137,10 +140,11 @@ def test_options_pytree_registration():
     rebuilt = jax.tree_util.tree_unflatten(treedef, leaves)
     assert rebuilt == cont
 
-    colloc = CollocationOptions(num_intervals=30, tol=1e-7)
+    colloc = CollocationOptions(num_intervals=30, tol=1e-7, period_weight=0.25)
     leaves_c, treedef_c = jax.tree_util.tree_flatten(colloc)
     rebuilt_c = jax.tree_util.tree_unflatten(treedef_c, leaves_c)
     assert rebuilt_c == colloc
+    assert rebuilt_c.period_weight == 0.25
 
 
 def test_bordered_newton_solve_with_options():
@@ -266,3 +270,42 @@ def test_collocation_and_continue_periodic_orbit_with_options():
         options=cont_opts,
     )
     assert len(branch) >= 2
+
+    # 4. continue_periodic_orbit respects collocation_options.period_weight
+    def f_freq_sl(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        omega = 1.0 + p
+        return jnp.array([x - omega * y - x * r2, omega * x + y - y * r2])
+
+    prob_freq = CollocationProblem(f_freq_sl, dim=2, options=colloc_opts)
+    sol_freq = solve_periodic_orbit(
+        prob_freq, u_mesh, T_init=2 * jnp.pi, p=0.0, options=colloc_opts
+    )
+    assert bool(sol_freq.converged)
+
+    branch_w0 = continue_periodic_orbit(
+        prob_freq,
+        initial_orbit=sol_freq,
+        p_start=0.0,
+        p_end=0.2,
+        dp=0.05,
+        dp_max=0.05,
+        max_steps=3,
+        param_mode="arclength",
+        collocation_options=colloc_opts.replace(period_weight=0.0),
+    )
+    branch_w1 = continue_periodic_orbit(
+        prob_freq,
+        initial_orbit=sol_freq,
+        p_start=0.0,
+        p_end=0.2,
+        dp=0.05,
+        dp_max=0.05,
+        max_steps=3,
+        param_mode="arclength",
+        collocation_options=colloc_opts.replace(period_weight=1.0),
+    )
+    assert len(branch_w0) == 4
+    assert len(branch_w1) == 4
+    assert float(branch_w0[-1].p) > float(branch_w1[-1].p)  # type: ignore[arg-type]
