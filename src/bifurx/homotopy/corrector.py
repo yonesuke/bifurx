@@ -46,6 +46,7 @@ def correct_arclength_step(
     solver_method: str = "auto",
     contraction_a: float = 0.125,
     enforce_contraction: bool = False,
+    track_contraction: bool = True,
 ) -> CorrectorResult:
     """Solve bordered arclength Newton system with optional contraction-rate early abort.
 
@@ -123,14 +124,15 @@ def correct_arclength_step(
         du = sol.x
         dp = jnp.squeeze(sol.y)
 
-        step_norm_w = weighted_inf_norm(dz, weights_arr)
-        step_norm_l2 = jnp.sqrt(jnp.sum(du**2) + dp**2)
-        z_norm_l2 = jnp.sqrt(jnp.sum(u**2) + p**2)
-        step_ok = (
-            step_norm_w <= step_tol
-            if use_weighted_step
-            else step_norm_l2 <= step_tol * (1.0 + z_norm_l2)
+        step_norm_w = (
+            weighted_inf_norm(dz, weights_arr) if use_weighted_step else jnp.max(jnp.abs(dz))
         )
+        if use_weighted_step:
+            step_ok = step_norm_w <= step_tol
+        else:
+            step_norm_l2 = jnp.sqrt(jnp.sum(du**2) + dp**2)
+            z_norm_l2 = jnp.sqrt(jnp.sum(u**2) + p**2)
+            step_ok = step_norm_l2 <= step_tol * (1.0 + z_norm_l2)
 
         u_cand = u + du
         p_cand = p + dp
@@ -149,13 +151,19 @@ def correct_arclength_step(
             (res_norm_next <= res_tol) | (step_ok & (res_norm_next <= 10.0 * res_tol))
         )
 
-        norm_dz0_next = jnp.where(it == 0, step_norm_w, norm_dz0)
-        theta_cand = step_norm_w / jnp.maximum(prev_sw, 1e-30)
-        theta_next = jnp.where((it >= 1) & (prev_sw > 1e-30), theta_cand, theta)
+        if track_contraction or enforce_contraction:
+            norm_dz0_next = jnp.where(it == 0, step_norm_w, norm_dz0)
+            theta_cand = step_norm_w / jnp.maximum(prev_sw, 1e-30)
+            theta_next = jnp.where((it >= 1) & (prev_sw > 1e-30), theta_cand, theta)
 
-        omega_from_i1 = 2.0 * step_norm_w / jnp.maximum(prev_sw**2, 1e-30)
-        omega_next = jnp.where((it == 1) & (prev_sw > max(1e-7, tol)), omega_from_i1, omega)
-        a_bar_next = jnp.where(it >= 1, a_bar * a_bar, a_bar)
+            omega_from_i1 = 2.0 * step_norm_w / jnp.maximum(prev_sw**2, 1e-30)
+            omega_next = jnp.where((it == 1) & (prev_sw > max(1e-7, tol)), omega_from_i1, omega)
+            a_bar_next = jnp.where(it >= 1, a_bar * a_bar, a_bar)
+        else:
+            norm_dz0_next = norm_dz0
+            theta_next = theta
+            omega_next = omega
+            a_bar_next = a_bar
 
         if enforce_contraction:
             abort_i0 = (

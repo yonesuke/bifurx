@@ -203,6 +203,7 @@ def track_arclength_scan(
             solver_method=solver_method,
             contraction_a=t_params.a,
             enforce_contraction=adaptive_step,
+            track_contraction=adaptive_step,
         )
 
         converged_step = is_active & res.converged
@@ -228,23 +229,19 @@ def track_arclength_scan(
         z2_next = jnp.where(converged_step, z2_cand, z2)
         z3_next = jnp.where(converged_step, z3_cand, z3)
         tr_next = jnp.where(converged_step, tr_cand, tr)
-
-        z_next = jnp.concatenate([u_next, jnp.atleast_1d(p_next)])
-        weights_next = jnp.where(
-            converged_step, update_weighted_norm(w_step, z_next, n_opts), weights
-        )
-
-        omega_valid = jnp.isfinite(res.omega) & (res.omega > 0.0)
-        omega_floor = jnp.maximum(0.5 * omega, 0.1)
-        omega_cand = jnp.where(omega_valid, jnp.maximum(res.omega, omega_floor), omega_floor)
-        omega_prev_next = jnp.where(converged_step, omega, omega_prev)
-        omega_next = jnp.where(converged_step, omega_cand, omega)
+        weights_next = jnp.where(converged_step, w_step, weights)
 
         in_bounds = (p_next >= p_min_val) & (p_next <= p_max_val)
         is_first_next = jnp.where(converged_step, jnp.bool_(False), is_first)
         last_failed_next = jnp.where(is_active, ~res.converged, last_failed)
 
         if adaptive_step:
+            omega_valid = jnp.isfinite(res.omega) & (res.omega > 0.0)
+            omega_floor = jnp.maximum(0.5 * omega, 0.1)
+            omega_cand = jnp.where(omega_valid, jnp.maximum(res.omega, omega_floor), omega_floor)
+            omega_prev_next = jnp.where(converged_step, omega, omega_prev)
+            omega_next = jnp.where(converged_step, omega_cand, omega)
+
             local_err = estimate_local_error(
                 u_pred, p_pred, u_cand, p_cand, cur_ds, pred_order, w_step
             )
@@ -267,6 +264,8 @@ def track_arclength_scan(
             can_retry = res.converged | (cur_ds > ds_min_val * (1.0 + 1e-12))
             is_active_next = is_active & jnp.where(res.converged, in_bounds, can_retry)
         else:
+            omega_prev_next = omega_prev
+            omega_next = omega
             ds_next = cur_ds
             is_active_next = converged_step & in_bounds
 
