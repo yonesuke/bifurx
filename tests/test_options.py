@@ -11,8 +11,9 @@ from bifurx.bvp.collocation import (
     continue_periodic_orbit,
     solve_periodic_orbit,
 )
-from bifurx.codim2.moore_spence import continuation_codim2
-from bifurx.continuation.arclength import (
+from bifurx.codim2 import continuation_codim2
+from bifurx.continuation import (
+    bordered_newton_solve,
     continuation,
     continuation_scan,
 )
@@ -23,7 +24,6 @@ from bifurx.options import (
     NewtonOptions,
 )
 from bifurx.problem import BifurcationProblem
-from bifurx.solvers.newton import bordered_newton_solve
 
 
 def f_pitchfork(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:

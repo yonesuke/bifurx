@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 
-from bifurx.bifurcations.switch import switch_branch
-from bifurx.continuation.arclength import continuation
+from bifurx.bifurcations import refine_bifurcation_point, switch_branch
+from bifurx.continuation import continuation
 from bifurx.problem import BifurcationProblem
 
 
@@ -201,7 +201,6 @@ def test_user_supplied_jacobians():
 
 def test_refinement_nan_validation():
     """Test that bifurcation refinement never returns or stores NaN coordinates (#3)."""
-    from bifurx.bifurcations.test_funcs import refine_bifurcation_point
 
     def f_singular(u, p):
         # Function that becomes NaN/singular near certain values
@@ -235,7 +234,6 @@ def test_refinement_nan_validation():
 
 def test_lp_refinement_bracket_selection():
     """Test that LP refinement selects the fold closest to the bracket (#12)."""
-    from bifurx.bifurcations.test_funcs import refine_bifurcation_point
 
     # F(u, p) = (u - 2)^2 - p  -> Fold at u = 2, p = 0
     # Secondary branch/fold could attract Newton if seeded from u_b

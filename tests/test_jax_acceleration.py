@@ -9,9 +9,8 @@ from bifurx.bvp.collocation import (
     CollocationProblem,
     solve_periodic_orbit,
 )
-from bifurx.continuation.arclength import continuation, continuation_scan
+from bifurx.continuation import bordered_newton_solve, continuation, continuation_scan
 from bifurx.problem import BifurcationProblem
-from bifurx.solvers.newton import bordered_newton_solve
 
 
 def f_pitchfork(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:

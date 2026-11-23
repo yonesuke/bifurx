@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from bifurx.bifurcations.test_funcs import (
+from bifurx.bifurcations import (
     extract_leading_hopf_pair,
 )
-from bifurx.bifurcations.test_funcs import (
+from bifurx.bifurcations import (
     test_func_hopf as hopf_test_func,
 )
-from bifurx.continuation.arclength import BifurcationPoint, continuation
+from bifurx.continuation import BifurcationPoint, bordered_newton_solve, continuation
 from bifurx.options import ContinuationOptions, NewtonOptions
 from bifurx.problem import BifurcationProblem
-from bifurx.solvers.newton import bordered_newton_solve
 
 
 def f_large_scale_pitchfork(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:

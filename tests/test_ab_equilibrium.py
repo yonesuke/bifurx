@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from bifurx.continuation.arclength import continuation
+from bifurx.continuation import continuation
 from bifurx.problem import BifurcationProblem
 
 P2 = 14.0

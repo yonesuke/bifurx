@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-from bifurx.solvers.bordered import (
+from bifurx.homotopy import (
     solve_bordered_block,
     solve_bordered_direct,
     solve_bordered_system,

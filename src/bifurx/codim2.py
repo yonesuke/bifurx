@@ -7,12 +7,12 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from bifurx.bifurcations.test_funcs import (
+from bifurx.bifurcations import (
     extract_leading_hopf_pair,
     initial_null_vector,
     moore_spence_fold_residual,
 )
-from bifurx.continuation.arclength import compute_initial_tangent, continuation_scan
+from bifurx.continuation import compute_initial_tangent, continuation_scan
 from bifurx.options import ContinuationOptions, resolve_continuation_options
 from bifurx.problem import BifurcationProblem
 

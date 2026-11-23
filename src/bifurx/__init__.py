@@ -14,11 +14,11 @@ if not getattr(jax.config, "jax_enable_x64", False):
     jax.config.update("jax_enable_x64", True)
     _logger.info("bifurx enabled jax_enable_x64=True for double precision continuation.")
 
-from bifurx.bifurcations.switch import switch_branch
-from bifurx.bifurcations.test_funcs import (
+from bifurx.bifurcations import (
     evaluate_point_diagnostics,
     extract_leading_hopf_pair,
     refine_bifurcation_point,
+    switch_branch,
     test_func_hopf,
 )
 from bifurx.bvp.collocation import (
@@ -31,41 +31,40 @@ from bifurx.bvp.collocation import (
 )
 from bifurx.bvp.floquet import compute_floquet_multipliers
 from bifurx.bvp.mesh import redistribute_mesh
-from bifurx.codim2.moore_spence import (
+from bifurx.codim2 import (
     Codim2Result,
     continuation_codim2,
 )
-from bifurx.continuation.arclength import (
+from bifurx.continuation import (
     BifurcationPoint,
     ContinuationResult,
     ContinuationScanResult,
+    NewtonResult,
+    bordered_newton_solve,
     compute_initial_tangent,
     continuation,
     continuation_scan,
 )
-from bifurx.homotopy import TrackerParameters, WeightedNormOptions
+from bifurx.homotopy import (
+    BorderedSolution,
+    TrackerParameters,
+    WeightedNormOptions,
+    solve_bordered_block,
+    solve_bordered_direct,
+    solve_bordered_system,
+)
 from bifurx.options import (
     CollocationOptions,
     ContinuationOptions,
     NewtonOptions,
 )
-from bifurx.prc.adjoint import (
+from bifurx.prc import (
     IPRCContinuationResult,
     IPRCResult,
     compute_iprc,
     continuation_iprc,
 )
 from bifurx.problem import BifurcationProblem
-from bifurx.solvers.bordered import (
-    BorderedSolution,
-    solve_bordered_block,
-    solve_bordered_direct,
-    solve_bordered_system,
-)
-from bifurx.solvers.newton import (
-    NewtonResult,
-    bordered_newton_solve,
-)
 
 __version__ = "0.1.0"
 

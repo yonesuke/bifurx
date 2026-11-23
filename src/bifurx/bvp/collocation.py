@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from bifurx.bifurcations.test_funcs import extract_leading_hopf_pair
+from bifurx.bifurcations import extract_leading_hopf_pair
 from bifurx.options import CollocationOptions, ContinuationOptions
 
 
