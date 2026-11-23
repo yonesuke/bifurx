@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 
 from bifurx.homotopy.bordered import factor_bordered_matrix, solve_factored_bordered
-from bifurx.homotopy.norm import weighted_distance
+from bifurx.homotopy.norm import weighted_distance, weighted_inf_norm
 
 
 def tangent_predict(
@@ -24,26 +24,24 @@ def estimate_pade_trust_region(
     z1: jax.Array,
     z2: jax.Array,
     z3: jax.Array,
+    weights: jax.Array | None = None,
 ) -> jax.Array:
-    """Estimate Padé (2,1) trust region radius from dominant component pole distances."""
-    c1, c2, c3 = jnp.abs(z1), jnp.abs(z2), jnp.abs(z3)
-    lam = jnp.maximum(1e-6, c1)
-    s1 = c1 / lam
-    s2 = c2 / (lam**2)
-    s3 = c3 / (lam**3)
-    c2_max = jnp.max(c2)
-    c3_max = jnp.max(c3)
-    tol = 1e-14 * jnp.maximum(s1, jnp.maximum(s2, s3))
-    # Ignore negligible zero-crossing components whose z2/z3 ratio reflects a sign change, not a pole.
-    valid = (s2 > tol) & (s3 > tol) & (c2 > 1e-2 * c2_max) & (c3 > 1e-3 * c3_max)
-    tau_i = jnp.where(valid, (s2 / jnp.where(valid, s3, 1.0)) / lam, jnp.inf)
-    tau_comp = jnp.min(tau_i)
-    fallback = jnp.where(
-        (c3_max > 1e-14 * (1.0 + jnp.max(c1) + c2_max)) & (c2_max > 0.0),
-        c2_max / jnp.maximum(c3_max, 1e-30),
-        jnp.inf,
+    """Estimate scale-invariant Padé (2,1) trust region radius in the weighted norm."""
+    w = (
+        jnp.ones_like(z1, dtype=jnp.float64)
+        if weights is None
+        else jnp.asarray(weights, dtype=jnp.float64)
     )
-    return jnp.where(jnp.any(valid), tau_comp, fallback)
+    n1 = weighted_inf_norm(z1, w)
+    n2 = weighted_inf_norm(z2, w)
+    n3 = weighted_inf_norm(z3, w)
+    r2 = jnp.sqrt(n2)
+    r3 = jnp.cbrt(n3)
+    r = jnp.maximum(n1, jnp.maximum(r2, r3))
+    eps_r2 = 1e-7  # sqrt(1e-14)
+    eps_r3 = 1e-14 ** (1.0 / 3.0)
+    has_pole = jnp.isfinite(r) & (r > 0.0) & (r2 > eps_r2 * r) & (r3 > eps_r3 * r)
+    return jnp.where(has_pole, n2 / jnp.where(has_pole, n3, 1.0), jnp.inf)
 
 
 def compute_arclength_taylor3(
@@ -55,6 +53,7 @@ def compute_arclength_taylor3(
     Jp: jax.Array,
     border_c: jax.Array | None = None,
     border_d: float | jax.Array | None = None,
+    weights: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Compute 2nd/3rd arclength Taylor coefficients and Padé trust region.
 
@@ -93,7 +92,7 @@ def compute_arclength_taylor3(
     rhs3 = -d2_12 - (1.0 / 6.0) * d3_111
     z3 = solve_factored_bordered(fac, rhs3, 0.0).z
 
-    trust_region = estimate_pade_trust_region(z1, z2, z3)
+    trust_region = estimate_pade_trust_region(z1, z2, z3, weights=weights)
     return z2, z3, trust_region
 
 
