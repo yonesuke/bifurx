@@ -128,13 +128,13 @@ By the **de Boor-Swartz theorem** (1973), Gauss-Legendre collocation achieves **
    A naive Euclidean norm on $X$ would over-weight densely meshed regions. `bifurx` instead defines diagonal quadrature weights approximating the continuous $L^2([0, 1])$ inner product plus period and parameter weights:
    $$\|\Delta X, \Delta p\|_{W_{\text{arc}}}^2 = \sum_{k=0}^{N-1} h_k \sum_{i=1}^m w_i \|\Delta u_{k, i}\|_2^2 + w_T^2 (\Delta T)^2 + w_p^2 (\Delta p)^2$$
 
-3. **de Boor-Swartz Block Condensation (`bvp.condensation`)**:
+3. **Two-Stage Block Condensation & $\mathcal{O}(N n^3)$ Cyclic Block-QR Solver (`bvp.condensation`)**:
    A dense factorization of the full collocation Jacobian costs $\mathcal{O}((N(m+1)n)^3)$. However, the interior Gauss variables $u_{k, 1:m}$ on subinterval $k$ couple **only** to the left endpoint $u_{k, 0}$, $T$, and $p$:
    $$A_k \, \Delta u_{k, 1:m} + B_k \, \Delta u_{k, 0} + q_{T, k} \, \Delta T + q_{p, k} \, \Delta p = r_{k}$$
-   `make_collocation_bordered_solver` implements a `BorderedOperatorSolver` that factorizes all $N$ local $(mn) \times (mn)$ blocks $A_k$ in parallel via `jax.vmap(lu_factor)`, eliminates $\Delta u_{k, 1:m}$ algebraically, and solves only the **condensed $(Nn + 2) \times (Nn + 2)$ system** for $(\Delta u_{\text{mesh}}, \Delta T, \Delta p)$—a speedup of $(m+1)^3 \approx 125\times$ for $m = 4$!
+   `make_collocation_bordered_solver` implements a `BorderedOperatorSolver` that first eliminates all interior Gauss variables in parallel via `jax.vmap(lu_factor)` (de Boor–Swartz condensation), and then solves the resulting cyclic block-bidiagonal + border system in $\mathcal{O}(N n^3)$ time and $\mathcal{O}(N n^2)$ memory via sequential orthogonal block-QR elimination (`jax.lax.scan`)—never allocating an $(Nn) \times (Nn)$ dense matrix. See [Structured Linear Algebra for Collocation BVPs](collocation_condensation.md) for the complete derivation.
 
-4. **Floquet Multipliers & Orbit Bifurcations (`bvp.floquet`)**:
-   The exact same local block elimination yields the subinterval transition matrices $M_k = C_0 I_n - \sum_{j=1}^m C_j K_{k, j}$. Multiplying them around the loop via `jax.lax.scan` gives the **monodromy matrix** $M = M_{N-1} \cdots M_1 M_0 \in \mathbb{R}^{n \times n}$ (`monodromy_condensation_raw`) inside `step_observer_fn`.
+4. **Floquet Multipliers, Periodic Real Schur & Orbit Bifurcations (`bvp.floquet`)**:
+   The exact same local block elimination yields the per-interval transition matrices $M_k = C_0 I_n - \sum_{j=1}^m C_j K_{k, j}$ (`monodromy_factors_condensation`), whose cyclic product is the **monodromy matrix** $M = M_{N-1} \cdots M_1 M_0 \in \mathbb{R}^{n \times n}$. For stiff or long-period orbits where multiplying $M_k$ explicitly suffers from overflow or roundoff loss, `bifurx` provides a pure-JAX **Periodic Real Schur decomposition** (`periodic_real_schur`, `compute_floquet_multipliers(..., method="periodic_qr")`, `compute_floquet_exponents`) that extracts multipliers and real Floquet exponents $\sigma_i = \frac{1}{T}\log|\mu_i|$ directly from the factors $\{M_k\}$. See [Periodic Real Schur for Stiff Floquet Analysis](periodic_schur_floquet.md).
 
    The eigenvalues $\mu_1, \dots, \mu_n$ of $M$ are the **Floquet multipliers**. Every autonomous periodic orbit has a trivial multiplier $\mu_1 = 1$; the orbit is linearly stable if $|\mu_j| < 1$ for all $j \ge 2$. Periodic-orbit bifurcations are detected via:
    - **Limit Point of Cycles / Fold (LPC)**: $\psi_{\text{LPC}} = \dot{p} = 0$ (multiplier crosses $+1$).

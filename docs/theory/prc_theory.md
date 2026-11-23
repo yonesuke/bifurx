@@ -186,29 +186,31 @@ $$u_k(\tau) = L_0(\xi) u_k + \sum_{j=1}^m L_j(\xi) u_{k, j}, \quad \xi = \frac{\
 
 By the **de Boor-Swartz theorem** (1973), collocation at Gauss points achieves **superconvergence** of order $\mathcal{O}(h^{2m})$ at the mesh nodes $\tau_k$.
 
-#### Stage 2: Direct Linear Solve of the Adjoint BVP
+#### Stage 2: Block-Condensed Linear Solve of the Adjoint BVP
 Once $(u^*, T)$ is converged, the adjoint equation on $[0, 1]$:
 
 $$\frac{dZ}{d\tau} + T [Df(u^*(\tau), p)]^T Z(\tau) = 0$$
 
 is discretized on the exact same Gauss collocation mesh.
 
-Because $u^*(\tau)$ and $T$ are fixed, this system is **strictly linear** in the unknowns $\{Z_k\}_{k=0}^{N-1}$ and $\{Z_{k, j}\}_{k=0, j=1}^{N-1, m}$:
+Because $u^*(\tau)$ and $T$ are fixed, this system is **strictly linear** in the unknowns $\{Z_k\}_{k=0}^{N-1}$, $\{Z_{k, j}\}_{k=0, j=1}^{N-1, m}$, and a scalar rank-1 border variable $\alpha$:
 
-$$\mathcal{L}(u^*, T) \mathbf{Z} = \mathbf{b}$$
-
-where:
-1. Collocation at Gauss node $i$ of interval $k$:
+1. **Collocation at Gauss node $i$ of interval $k$**:
    $$\frac{1}{h_k} \sum_{j=0}^m D_{ij} Z_{k, j} + T [Df(u_{k, i}^*)]^T Z_{k, i} = 0$$
-2. Inter-element continuity:
-   $$Z_{k+1} - \sum_{j=0}^m C_j Z_{k, j} = 0$$
-3. Normalization constraint replacing one periodic matching equation:
+2. **Inter-element continuity & bordered periodic closure**:
+   $$Z_{k+1} - \sum_{j=0}^m C_j Z_{k, j} = 0 \quad (k = 0, \dots, N - 2), \qquad Z_0 - \sum_{j=0}^m C_j Z_{N-1, j} + \alpha \, \hat{f}_0 = 0$$
+   where $\hat{f}_0 = f(u_0^*) / \|f(u_0^*)\|_2$. Keeping all $n$ periodic boundary rows and adding the rank-1 border $\alpha \hat{f}_0$ guarantees that the operator remains **nonsingular regardless of which component of $f(u_0^*)$ vanishes** (whereas replacing a fixed coordinate row breaks down whenever that velocity component happens to be zero at $\tau = 0$). At the exact solution, $\alpha = 0$ identically.
+3. **Normalization constraint**:
    $$\langle Z_0, f(u_0^*) \rangle = \frac{2\pi}{T}$$
 
-This linear system is solved in a **single, non-iterative linear solve** (`np.linalg.solve`), providing:
-- Machine-precision accuracy matching the collocation order.
-- Complete immunity to stiff Floquet modes.
-- Instantaneous computation ($\approx 10$ milliseconds).
+Rather than assembling a full dense $(N(m+1)n + 1) \times (N(m+1)n + 1)$ Jacobian via automatic differentiation, `_solve_adjoint_collocation_jax` applies **de Boor–Swartz block condensation** (see [Collocation Condensation](collocation_condensation.md)):
+- On each subinterval $k$, the local $(mn) \times (mn)$ adjoint collocation block $A_k^{\text{adj}}$ is LU-factored in parallel via `jax.vmap(jax.scipy.linalg.lu_factor)`, eliminating all interior Gauss unknowns $Z_{k, 1:m} = -K_k^{\text{adj}} Z_k$.
+- Substituting into the continuity and bordered periodic rows yields a compact **$(Nn + 1) \times (Nn + 1)$ condensed linear system** for $(Z_0, \dots, Z_{N-1}, \alpha)$—eliminating the $(m+1)^3 \approx 125\times$ dense cost factor (for $m = 4$) and solving in a single JIT-compiled LU pass (with automatic `lstsq` fallback if near-singular).
+
+This provides:
+- Machine-precision accuracy matching the $\mathcal{O}(h^{2m})$ collocation order.
+- Complete immunity to stiff Floquet modes and zero velocity components at $\tau = 0$.
+- Pure-JAX JIT and `vmap` compatibility with minimal memory footprint.
 
 ---
 

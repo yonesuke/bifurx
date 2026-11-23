@@ -26,14 +26,14 @@ For decades, software packages such as **AUTO-07P**, **MATCONT**, and **COCO** h
   - Euler tangent and 3rd-order **Padé (2,1)** rational predictors with scale-invariant trust regions via nested `jax.jvp`.
   - Scale-invariant weighted norms, affine-invariant Kantorovich Newton corrector, and theory-grounded adaptive step-size control (Timme, 2020).
 - **Bordered Linear Solvers & Pluggable Operators**:
-  - Block LU (Schur complement), Direct LU with SVD/least-squares fallback, matrix-free GMRES via `jax.jvp`, and de Boor-Swartz block condensation for collocation BVPs.
+  - Block LU (Schur complement), Direct LU with SVD/least-squares fallback, matrix-free GMRES via `jax.jvp`, and two-stage de Boor–Swartz + $\mathcal{O}(N n^3)$ orthogonal cyclic block-QR condensation for collocation BVPs.
 - **Codimension-1 & Codimension-2 Bifurcation Analysis**:
   - **Limit Points (LP)**, **Branch Points (BP)** (via bordered Jacobian determinant), and **Hopf Bifurcations (HB)** (with first Lyapunov coefficient $l_1$).
   - **Branch Switching** via the Algebraic Bifurcation Equation (ABE) using nested `jax.jvp`.
   - **Two-Parameter Continuation (`bifurx.codim2`)**: Tracks LP and HB curves and detects Cusp (CP), Bogdanov-Takens (BT), Generalized Hopf (GH), and Zero-Hopf (ZH) singularities.
 - **Periodic Orbits, Floquet Stability & iPRCs (`bifurx.bvp`, `bifurx.prc`)**:
-  - Superconvergent Gauss-Legendre orthogonal collocation with adaptive mesh redistribution and monodromy condensation for Floquet multipliers (LPC, PD, NS).
-  - Non-iterative linear adjoint collocation BVP for infinitesimal Phase Response Curves (iPRCs) and their parameter continuation.
+  - Superconvergent Gauss-Legendre orthogonal collocation with adaptive mesh redistribution, $\mathcal{O}(N n^3)$ cyclic block-QR condensation, and overflow-free Periodic Real Schur Floquet analysis (LPC, PD, NS).
+  - Block-condensed, non-iterative linear adjoint collocation BVP for infinitesimal Phase Response Curves (iPRCs) and their parameter continuation.
 
 ---
 
@@ -113,9 +113,11 @@ print(f"Upper branch computed {res_up.num_points} points.")
 
 - **Theory**:
   - [Homotopy Continuation: General Theory & Path-Tracking Core](theory/homotopy_continuation.md): General theory of `bifurx.homotopy`—Keller pseudo-arclength, scale-invariant weighted norms, Padé (2,1) predictors, bordered/operator solvers, affine-invariant Kantorovich Newton, and Timme (2020) step-size control.
-  - [Applying Homotopy Continuation to Dynamical Systems](theory/dynamical_systems.md): How equilibria, codimension-2 curves, Gauss-Legendre collocation periodic orbits (with de Boor-Swartz condensation & Floquet analysis), and iPRCs map onto the homotopy core.
+  - [Applying Homotopy Continuation to Dynamical Systems](theory/dynamical_systems.md): How equilibria, codimension-2 curves, Gauss-Legendre collocation periodic orbits, and iPRCs map onto the homotopy core.
+  - [Structured Linear Algebra for Periodic-Orbit Collocation BVPs](theory/collocation_condensation.md): Two-stage de Boor–Swartz block condensation and $\mathcal{O}(N n^3)$ orthogonal cyclic block-QR elimination (Wright 1992 / Ascher–Mattheij–Russell).
+  - [Periodic Real Schur Decomposition for Stiff Floquet Analysis](theory/periodic_schur_floquet.md): Overflow/underflow-free Bojanczyk–Golub–Van Dooren Periodic Real Schur decomposition for Floquet multipliers, exponents, and cycle bifurcations on stiff orbits.
   - [Bifurcation Theory & Branch Switching](theory/bifurcations.md): Mathematical formulations of Fold, Hopf, and Branch Points, the Moore-Spence & Hopf defining systems, first Lyapunov coefficient, and the Algebraic Bifurcation Equation.
-  - [Phase Reduction Theory & iPRC](theory/prc_theory.md): Isochrons, linear adjoint collocation BVP, Malkin weak-coupling theory, and iPRC parameter continuation.
+  - [Phase Reduction Theory & iPRC](theory/prc_theory.md): Isochrons, block-condensed linear adjoint collocation BVP, Malkin weak-coupling theory, and iPRC parameter continuation.
   - [CR3BP & KAM Torus Theory](theory/cr3bp_kam.md): Hamiltonian continuation, Lyapunov Center Theorem, symplectic Floquet theory, and KAM invariant tori.
 - **Interactive Tutorials & Demos**:
   - [Demo 1: Supercritical Pitchfork Bifurcation](../notebooks/01_pitchfork_bifurcation.ipynb): Step-by-step branch switching and diagram plotting.

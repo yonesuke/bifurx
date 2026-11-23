@@ -13,6 +13,8 @@ project:
       children:
         - file: theory/homotopy_continuation.md
         - file: theory/dynamical_systems.md
+        - file: theory/collocation_condensation.md
+        - file: theory/periodic_schur_floquet.md
         - file: theory/bifurcations.md
         - file: theory/prc_theory.md
         - file: theory/cr3bp_kam.md
