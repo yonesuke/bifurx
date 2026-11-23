@@ -7,6 +7,7 @@ import pytest
 from bifurx.bvp import (
     CollocationProblem,
     CondensedCollocationFactor,
+    branch_from_hopf,
     compute_floquet_multipliers,
     continue_periodic_orbit,
     evaluate_floquet_diagnostics,
@@ -787,3 +788,62 @@ def test_continue_periodic_orbit_period_bounds():
     assert len(branch) < 80, "Continuation should stop early when period_bounds is reached"
     assert float(branch[-1].period) >= t_max
     assert float(branch[-2].period) < t_max
+
+
+def test_branch_from_hopf_arclength_supercritical_and_subcritical():
+    """Verify AUTO-style Hopf branch switching handles supercritical, subcritical, and Kuramoto."""
+
+    # 1. Supercritical Hopf: r^2 = p > 0, T = 2*pi
+    def f_super(u: jnp.ndarray, p: float) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        return jnp.array([p * x - y - x * r2, x + p * y - y * r2])
+
+    prob_sup = CollocationProblem(f_super, dim=2, num_intervals=20, num_gauss_points=4)
+    sol_sup = branch_from_hopf(prob_sup, u_hopf=[0.0, 0.0], p_hopf=0.0, ds=0.1)
+    assert bool(sol_sup.converged)
+    assert sol_sup.p is not None and float(sol_sup.p) > 0.0
+    assert abs(float(sol_sup.period) - 2.0 * float(jnp.pi)) < 1e-6
+    assert abs(float(sol_sup.amplitude) ** 2 - float(sol_sup.p)) < 1e-5
+
+    # 2. Subcritical Hopf: r^2 = -p > 0 => p < 0 automatically without setting direction!
+    def f_sub(u: jnp.ndarray, p: float) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        return jnp.array([p * x - y + x * r2, x + p * y + y * r2])
+
+    prob_sub = CollocationProblem(f_sub, dim=2, num_intervals=20, num_gauss_points=4)
+    sol_sub = branch_from_hopf(prob_sub, u_hopf=[0.0, 0.0], p_hopf=0.0, ds=0.1)
+    assert bool(sol_sub.converged)
+    assert sol_sub.p is not None and float(sol_sub.p) < 0.0
+    assert abs(float(sol_sub.period) - 2.0 * float(jnp.pi)) < 1e-6
+    assert abs(float(sol_sub.amplitude) ** 2 + float(sol_sub.p)) < 1e-5
+
+    # 3. Bimodal Kuramoto (Martens et al. 2009) at omega0 = 1.3589, Hopf at Delta = 1.0
+    def f_bimodal(u: jnp.ndarray, delta: float) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        w0 = 1.3589
+        return jnp.array(
+            [
+                (1.0 - 0.5 * delta) * x - 0.5 * w0 * y - x**3 + x * y**2,
+                -0.5 * delta * y + 0.5 * w0 * x - 2.0 * x**2 * y,
+            ]
+        )
+
+    prob_bi = CollocationProblem(f_bimodal, dim=2, num_intervals=25, num_gauss_points=4)
+    sol_bi = branch_from_hopf(prob_bi, u_hopf=[0.0, 0.0], p_hopf=1.0, ds=0.1)
+    assert bool(sol_bi.converged)
+    assert sol_bi.p is not None and float(sol_bi.p) < 1.0
+    branch_bi = continue_periodic_orbit(
+        prob_bi,
+        initial_orbit=sol_bi,
+        p_start=float(sol_bi.p),
+        p_end=0.85,
+        dp=0.03,
+        max_steps=15,
+        param_mode="arclength",
+        compute_floquet=True,
+    )
+    assert len(branch_bi) >= 4
+    assert float(branch_bi[-1].p) < float(sol_bi.p) - 0.03  # type: ignore[arg-type]
+    assert bool(branch_bi[-1].is_stable)
