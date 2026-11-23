@@ -599,10 +599,139 @@ def make_e3_iprc_pipeline() -> None:
     _save_excalidraw("iprc_continuation_pipeline", elems)
 
 
+def make_e4_jax_autodiff_patterns() -> None:
+    fig, ax = plt.subplots(figsize=(11.8, 5.2), dpi=220)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+    ax.set_xlim(0, 15.0)
+    ax.set_ylim(0, 6.6)
+    ax.axis("off")
+
+    elems: list[dict[str, Any]] = []
+
+    ax.text(
+        7.5,
+        6.25,
+        "Differentiable Programming in bifurx: Tensor-Free Nested JVPs & Static XLA Loops",
+        ha="center",
+        va="center",
+        fontsize=12.6,
+        fontweight="bold",
+        color="#1e3a5f",
+        family="Chalkboard SE",
+    )
+
+    # Left source box: pure JAX residual F(u, p)
+    elems.append(
+        _draw_box(
+            ax,
+            0.25,
+            2.35,
+            3.10,
+            2.15,
+            "Pure-JAX Model",
+            "F(u, p) : R^n x R -> R^n\nPyTree Problem &\nOptions (float64)",
+            fill="#f1f5f9",
+            stroke="#334155",
+            seed=501,
+            title_size=11.0,
+            sub_size=8.9,
+        )
+    )
+
+    # Top-right: 4 tensor-free JVP consumers
+    jvp_boxes = [
+        (
+            4.35,
+            4.55,
+            4.85,
+            1.20,
+            "1st-Order JVP  (O(n) mem)",
+            "Matrix-free GMRES matvec & operator\nresidual verification (homotopy.bordered)",
+            "#dbeafe",
+            "#1d4ed8",
+            502,
+        ),
+        (
+            9.70,
+            4.55,
+            5.00,
+            1.20,
+            "2nd-Order Nested JVP",
+            "ABE coefficients c_11, c_12, c_22 &\nCusp test <w, D^2F[v, v]> (bifurcations / codim2)",
+            "#e0f2fe",
+            "#0369a1",
+            503,
+        ),
+        (
+            4.35,
+            2.90,
+            4.85,
+            1.20,
+            "3rd-Order Nested JVP",
+            "Padé (2,1) Taylor coeffs (z_2, z_3) &\nKuznetsov l_1 forms B, C (no O(n^4) tensors!)",
+            "#ede9fe",
+            "#6d28d9",
+            504,
+        ),
+        (
+            9.70,
+            2.90,
+            5.00,
+            1.20,
+            "vmap + jacfwd Parallelism",
+            "Parallel subinterval Jacobians & LU\nin de Boor-Swartz condensation (bvp / prc)",
+            "#dcfce7",
+            "#15803d",
+            505,
+        ),
+    ]
+    for x, y, w, h, title, sub, fill, stroke, seed in jvp_boxes:
+        elems.append(
+            _draw_box(
+                ax, x, y, w, h, title, sub, fill=fill, stroke=stroke, seed=seed, title_size=10.2, sub_size=8.3
+            )
+        )
+
+    # Arrows from Pure-JAX Model to the 4 autodiff patterns
+    elems.append(_draw_arrow(ax, [(3.38, 3.95), (4.30, 5.15)], color="#1d4ed8", seed=510))
+    elems.append(_draw_arrow(ax, [(3.38, 3.55), (4.30, 3.50)], color="#6d28d9", seed=511))
+    elems.append(_draw_arrow(ax, [(9.23, 5.15), (9.66, 5.15)], color="#0369a1", seed=512, ls="--"))
+    elems.append(_draw_arrow(ax, [(9.23, 3.50), (9.66, 3.50)], color="#15803d", seed=513, ls="--"))
+
+    # Bottom banner: Static-shape XLA execution model
+    elems.append(
+        _draw_box(
+            ax,
+            0.25,
+            0.35,
+            14.45,
+            1.55,
+            "Static-Shape XLA Execution (jax.lax.scan + jax.lax.while_loop)",
+            "Fixed-length scan with `is_active` mask & `jnp.where` state freezing  •  Zero Python overhead per step\n"
+            "Adaptive step retry inside scan  •  Outer chunking only for topology-changing mesh redistribution",
+            fill="#fef3c7",
+            stroke="#b45309",
+            seed=506,
+            title_size=10.8,
+            sub_size=8.7,
+        )
+    )
+
+    elems.append(_draw_arrow(ax, [(6.75, 2.86), (6.75, 1.95)], color="#b45309", seed=514))
+    elems.append(_draw_arrow(ax, [(12.20, 2.86), (12.20, 1.95)], color="#b45309", seed=515))
+
+    fig.tight_layout(pad=0.2)
+    fig.savefig(os.path.join(OUT_DIR, "jax_autodiff_patterns.png"), dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    _save_excalidraw("jax_autodiff_patterns", elems)
+
+
 if __name__ == "__main__":
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(SRC_DIR, exist_ok=True)
     make_e1_architecture()
     make_e2_tracker_flow()
     make_e3_iprc_pipeline()
-    print("Generated E1, E2, E3 PNGs and .excalidraw sources.")
+    make_e4_jax_autodiff_patterns()
+    print("Generated E1, E2, E3, E4 PNGs and .excalidraw sources.")
