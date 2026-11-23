@@ -33,6 +33,7 @@ from bifurx.bvp.collocation import (
 from bifurx.bvp.floquet import compute_floquet_multipliers
 from bifurx.bvp.mesh import redistribute_mesh
 from bifurx.codim2 import (
+    Codim2Point,
     Codim2Result,
     continuation_codim2,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "BifurcationPoint",
     "BifurcationProblem",
     "BorderedSolution",
+    "Codim2Point",
     "Codim2Result",
     "CollocationOptions",
     "CollocationProblem",

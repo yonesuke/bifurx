@@ -57,6 +57,13 @@ def test_fold_continuation_codim2_auto_run3_benchmark():
     assert abs(u1_found - 0.4996530) < 1e-2, f"Fold u1 mismatch: {u1_found}"
     assert abs(u2_found - 1.998613) < 5e-2, f"Fold u2 mismatch: {u2_found}"
 
+    # Verify the exact AUTO-07P A-B reaction Cusp (CP) singularity at (p1=0.1353352, p3=2.5000)
+    cps = res.get_singularities("CP")
+    assert len(cps) == 1
+    assert any(pt.bif_type == "CP" for pt in res.get_singularities())
+    assert abs(cps[0].p1 - 0.1353352) < 1e-3
+    assert abs(cps[0].p2 - 2.5000) < 1e-2
+
 
 def test_hopf_continuation_codim2():
     """Test 2-parameter Hopf (HB) continuation in (p1, p3) parameter space."""
@@ -86,3 +93,102 @@ def test_hopf_continuation_codim2():
     assert bool(jnp.all(p1_arr > 0.0))
     assert bool(jnp.all(jnp.isfinite(p1_arr)))
     assert bool(jnp.all(jnp.isfinite(p3_arr)))
+
+
+def test_codim2_cusp_and_bogdanov_takens_on_fold_curve():
+    """Verify CP (Cusp) and BT (Bogdanov-Takens) detection along LP curves."""
+
+    def f_cusp(u: jnp.ndarray, p1: float, p2: float) -> jnp.ndarray:
+        return jnp.array([p1 + p2 * u[0] - u[0] ** 3])
+
+    res_cp = continuation_codim2(
+        f_cusp,
+        bif_type="LP",
+        u_init=[0.5],
+        p1_init=-0.25,
+        p2_init=0.75,
+        ds=0.04,
+        ds_max=0.08,
+        direction=1.0,
+        param_orient_index=0,
+        p1_bounds=(-0.5, 0.5),
+        max_steps=40,
+    )
+    cps = res_cp.get_singularities("CP")
+    assert len(cps) == 1
+    assert abs(cps[0].p1) < 1e-2
+    assert abs(cps[0].p2) < 1e-2
+    assert abs(float(cps[0].u[0])) < 1e-2
+
+    def f_bt(u: jnp.ndarray, p1: float, p2: float) -> jnp.ndarray:
+        return jnp.array([u[1], p1 + p2 * u[1] + u[0] ** 2 + u[0] * u[1]])
+
+    res_bt = continuation_codim2(
+        f_bt,
+        bif_type="LP",
+        u_init=[0.0, 0.0],
+        p1_init=0.0,
+        p2_init=0.5,
+        ds=0.05,
+        ds_max=0.08,
+        direction=-1.0,
+        param_orient_index=1,
+        p2_bounds=(-0.5, 0.6),
+        max_steps=40,
+    )
+    bts = res_bt.get_singularities("BT")
+    assert len(bts) == 1
+    assert abs(bts[0].p1) < 1e-4
+    assert abs(bts[0].p2) < 1e-2
+
+
+def test_codim2_bautin_and_zero_hopf_on_hopf_curve():
+    """Verify GH (Bautin) and 3D ZH (Zero-Hopf) detection along HB curves."""
+
+    def f_bautin(u: jnp.ndarray, p1: float, p2: float) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        return jnp.array(
+            [p1 * x - y + p2 * x * r2 - x * r2**2, x + p1 * y + p2 * y * r2 - y * r2**2]
+        )
+
+    res_gh = continuation_codim2(
+        f_bautin,
+        bif_type="HB",
+        u_init=[0.0, 0.0],
+        p1_init=0.0,
+        p2_init=-0.45,
+        ds=0.06,
+        ds_max=0.08,
+        direction=1.0,
+        param_orient_index=1,
+        p2_bounds=(-0.6, 0.5),
+        max_steps=30,
+    )
+    ghs = res_gh.get_singularities("GH")
+    assert len(ghs) == 1
+    assert abs(ghs[0].p1) < 1e-4
+    assert abs(ghs[0].p2) < 1e-2
+
+    def f_zero_hopf(u: jnp.ndarray, p1: float, p2: float) -> jnp.ndarray:
+        x, y, z = u[0], u[1], u[2]
+        r2 = x * x + y * y
+        return jnp.array([p1 * x - y - x * r2, x + p1 * y - y * r2, p2 * z - z**3])
+
+    res_zh = continuation_codim2(
+        f_zero_hopf,
+        bif_type="HB",
+        u_init=[0.0, 0.0, 0.0],
+        p1_init=0.0,
+        p2_init=-0.45,
+        ds=0.06,
+        ds_max=0.08,
+        direction=1.0,
+        param_orient_index=1,
+        p2_bounds=(-0.6, 0.5),
+        max_steps=30,
+    )
+    zhs = res_zh.get_singularities("ZH")
+    assert len(zhs) == 1
+    assert abs(zhs[0].p1) < 1e-4
+    assert abs(zhs[0].p2) < 1e-2
