@@ -67,7 +67,7 @@ def _solve_adjoint_collocation_jax(
     p: float | jax.Array,
     omega_val: jax.Array,
 ) -> jax.Array:
-    """Pure-JAX vectorized linear collocation solve for the periodic adjoint BVP."""
+    """Pure-JAX vectorized linear bordered collocation solve for the periodic adjoint BVP."""
     N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
     D = jnp.asarray(problem.D, dtype=jnp.float64)
     C = jnp.asarray(problem.C, dtype=jnp.float64)
@@ -76,14 +76,20 @@ def _solve_adjoint_collocation_jax(
 
     jac_fn = jax.jacobian(lambda u: problem.fn(u, p_val, **problem.kwargs))
     Ju_all = jax.vmap(jax.vmap(jac_fn))(u_gauss)
-    f0 = problem.fn(u_mesh[0], p_val, **problem.kwargs)
+    f0 = jnp.atleast_1d(
+        jnp.asarray(problem.fn(u_mesh[0], p_val, **problem.kwargs), dtype=jnp.float64)
+    ).ravel()
+    f0_norm = jnp.linalg.norm(f0)
+    f0_unit = f0 / jnp.where(f0_norm > 1e-30, f0_norm, 1.0)
 
     n_mesh = N * n
     dim_z = N * (m + 1) * n
+    dim_aug = dim_z + 1
 
-    def adjoint_operator(z_flat: jax.Array) -> jax.Array:
-        Z_mesh = z_flat[:n_mesh].reshape((N, n))
-        Z_gauss = z_flat[n_mesh:].reshape((N, m, n))
+    def adjoint_operator(z_aug: jax.Array) -> jax.Array:
+        Z_mesh = z_aug[:n_mesh].reshape((N, n))
+        Z_gauss = z_aug[n_mesh:dim_z].reshape((N, m, n))
+        alpha = z_aug[dim_z]
         Z_full = jnp.concatenate([Z_mesh[:, None, :], Z_gauss], axis=1)
 
         dZ_dt = jnp.einsum("mj,Njd->Nmd", D, Z_full) / h[:, None, None]
@@ -92,14 +98,22 @@ def _solve_adjoint_collocation_jax(
 
         Z_end = jnp.einsum("j,Njd->Nd", C, Z_full)
         res_cont = (Z_mesh[1:] - Z_end[:-1]).ravel()
-        res_bc = (Z_mesh[0, : n - 1] - Z_end[N - 1, : n - 1]).ravel()
+        # Keep all n periodic BC rows with rank-1 border alpha * f0_unit so L stays
+        # nonsingular regardless of which component of f0 is zero (#22).
+        res_bc = (Z_mesh[0] - Z_end[N - 1] + alpha * f0_unit).ravel()
         res_norm = jnp.atleast_1d(jnp.dot(f0, Z_mesh[0]))
 
         return jnp.concatenate([res_coll, res_cont, res_bc, res_norm])
 
-    L = jax.jacobian(adjoint_operator)(jnp.zeros(dim_z, dtype=jnp.float64))
-    rhs = jnp.zeros(dim_z, dtype=jnp.float64).at[-1].set(omega_val)
-    return jnp.linalg.solve(L, rhs)[:n_mesh].reshape((N, n))
+    L = jax.jacfwd(adjoint_operator)(jnp.zeros(dim_aug, dtype=jnp.float64))
+    rhs = jnp.zeros(dim_aug, dtype=jnp.float64).at[-1].set(omega_val)
+    sol_direct = jnp.linalg.solve(L, rhs)
+    sol = jax.lax.cond(
+        jnp.all(jnp.isfinite(sol_direct)),
+        lambda: sol_direct,
+        lambda: jnp.linalg.lstsq(L, rhs, rcond=1e-12)[0],
+    )
+    return sol[:n_mesh].reshape((N, n))
 
 
 def _build_iprc_result(
@@ -126,7 +140,7 @@ def compute_iprc(
     sol_or_fn: PeriodicOrbitResult | Callable[..., jax.Array],
     u_mesh: ArrayLike | None = None,
     T: float | jax.Array | None = None,
-    p: float | jax.Array = 0.0,
+    p: float | jax.Array | None = None,
     omega_target: float | jax.Array | None = None,
     **kwargs: Any,
 ) -> IPRCResult:
@@ -136,15 +150,17 @@ def compute_iprc(
     """
     if isinstance(sol_or_fn, PeriodicOrbitResult):
         sol = sol_or_fn
+        p_val: float | jax.Array = (sol.p if sol.p is not None else 0.0) if p is None else p
     else:
         if u_mesh is None or T is None:
             msg = "Must provide u_mesh and T when calling compute_iprc with a function."
             raise ValueError(msg)
+        p_val = 0.0 if p is None else p
         u_arr = jnp.asarray(u_mesh, dtype=jnp.float64)
         prob = CollocationProblem(
             sol_or_fn, dim=int(u_arr.shape[1]), num_intervals=int(u_arr.shape[0]), **kwargs
         )
-        sol = solve_periodic_orbit(prob, u_mesh_init=u_arr, T_init=T, p=p)
+        sol = solve_periodic_orbit(prob, u_mesh_init=u_arr, T_init=T, p=p_val)
 
     problem = sol.problem
     T_arr = jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64))
@@ -157,7 +173,9 @@ def compute_iprc(
         if omega_target is None
         else jnp.squeeze(jnp.asarray(omega_target, dtype=jnp.float64))
     )
-    Z_eval = _solve_adjoint_collocation_jax(problem, mesh, u_mesh_arr, u_gauss, T_arr, p, omega_val)
+    Z_eval = _solve_adjoint_collocation_jax(
+        problem, mesh, u_mesh_arr, u_gauss, T_arr, p_val, omega_val
+    )
     return _build_iprc_result(mesh[:-1], u_mesh_arr, Z_eval, T_arr, omega_val)
 
 

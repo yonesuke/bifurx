@@ -110,3 +110,44 @@ def test_van_der_pol_iprc_and_continuation():
     # Period should increase monotonically with mu for Van der Pol
     periods = res_cont.periods
     assert bool(jnp.all(jnp.diff(periods) > 0.0)), f"Period should increase with mu: {periods}"
+
+
+def test_iprc_singular_last_velocity_component():
+    """Verify bordered adjoint solve stays nonsingular when f0[-1] == 0 (#22)."""
+    N, m = 25, 4
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+
+    # 1. 2D Stuart-Landau shifted by pi/2 so u0 = (0, 1) and f0 = (-1, 0), hence f0[-1] == 0
+    prob_2d = CollocationProblem(f_stuart_landau, dim=2, num_intervals=N, num_gauss_points=m)
+    u_init_2d = jnp.stack([-jnp.sin(t_grid), jnp.cos(t_grid)], axis=1)
+    sol_2d = solve_periodic_orbit(prob_2d, u_init_2d, T_init=6.28, p=0.0, tol=1e-9)
+    assert bool(sol_2d.converged)
+    assert abs(float(f_stuart_landau(sol_2d.u_mesh[0])[-1])) < 1e-8
+
+    prc_2d = compute_iprc(sol_2d)  # p=None infers sol_2d.p
+    assert bool(jnp.all(jnp.isfinite(prc_2d.Z)))
+    ts = prc_2d.ts
+    assert float(jnp.max(jnp.abs(prc_2d.Z[:, 0] - (-jnp.cos(ts))))) < 1e-4
+    assert float(jnp.max(jnp.abs(prc_2d.Z[:, 1] - (-jnp.sin(ts))))) < 1e-4
+    f0_2d = f_stuart_landau(prc_2d.orbit[0])
+    assert abs(float(jnp.dot(prc_2d.Z[0], f0_2d)) - float(prc_2d.omega)) < 1e-5
+
+    # 2. 3D decoupled system with z(t) == 0 -> f0 = (-1, 0, 0)
+    def f_3d(u: jnp.ndarray, p: float = 0.0) -> jnp.ndarray:
+        x, y, z = u[0], u[1], u[2]
+        r2 = x * x + y * y
+        return jnp.array([x - y - x * r2, x + y - y * r2, -(1.0 + p) * z])
+
+    prob_3d = CollocationProblem(f_3d, dim=3, num_intervals=N, num_gauss_points=m)
+    u_init_3d = jnp.stack([-jnp.sin(t_grid), jnp.cos(t_grid), jnp.zeros_like(t_grid)], axis=1)
+    sol_3d = solve_periodic_orbit(prob_3d, u_init_3d, T_init=6.28, p=0.5, tol=1e-9)
+    assert bool(sol_3d.converged)
+    assert abs(float(f_3d(sol_3d.u_mesh[0], 0.5)[-1])) < 1e-12
+
+    prc_3d = compute_iprc(sol_3d)  # verifies p=0.5 inferred from sol_3d.p
+    assert bool(jnp.all(jnp.isfinite(prc_3d.Z)))
+    assert float(jnp.max(jnp.abs(prc_3d.Z[:, 0] - (-jnp.cos(prc_3d.ts))))) < 1e-4
+    assert float(jnp.max(jnp.abs(prc_3d.Z[:, 1] - (-jnp.sin(prc_3d.ts))))) < 1e-4
+    assert float(jnp.max(jnp.abs(prc_3d.Z[:, 2]))) < 1e-4
+    f0_3d = f_3d(prc_3d.orbit[0], 0.5)
+    assert abs(float(jnp.dot(prc_3d.Z[0], f0_3d)) - float(prc_3d.omega)) < 1e-5
