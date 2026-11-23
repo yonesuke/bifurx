@@ -68,54 +68,85 @@ def _solve_adjoint_collocation_jax(
     T: jax.Array,
     p: float | jax.Array,
     omega_val: jax.Array,
+    *,
+    rcond: float = 1e-12,
 ) -> jax.Array:
-    """Pure-JAX vectorized linear bordered collocation solve for the periodic adjoint BVP."""
+    """Pure-JAX de Boor-Swartz block-condensed linear solve for the periodic adjoint BVP."""
     N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
     D = jnp.asarray(problem.D, dtype=jnp.float64)
     C = jnp.asarray(problem.C, dtype=jnp.float64)
-    h = mesh[1:] - mesh[:-1]
+    mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
+    u_mesh_arr = jnp.asarray(u_mesh, dtype=jnp.float64)
+    u_gauss_arr = jnp.asarray(u_gauss, dtype=jnp.float64)
+    T_val = jnp.squeeze(jnp.asarray(T, dtype=jnp.float64))
     p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
+    omega_arr = jnp.squeeze(jnp.asarray(omega_val, dtype=jnp.float64))
+    h = mesh_arr[1:] - mesh_arr[:-1]
 
-    jac_fn = jax.jacobian(lambda u: problem.fn(u, p_val, **problem.kwargs))
-    Ju_all = jax.vmap(jax.vmap(jac_fn))(u_gauss)
+    eye_n = jnp.eye(n, dtype=jnp.float64)
+    eye_m = jnp.eye(m, dtype=jnp.float64)
+
+    jac_fn = jax.jacfwd(lambda u: problem.fn(u, p_val, **problem.kwargs))
+    Ju_all = jax.vmap(jax.vmap(jac_fn))(u_gauss_arr)
+    Ju_T_all = jnp.swapaxes(Ju_all, -2, -1)
+
     f0 = jnp.atleast_1d(
-        jnp.asarray(problem.fn(u_mesh[0], p_val, **problem.kwargs), dtype=jnp.float64)
+        jnp.asarray(problem.fn(u_mesh_arr[0], p_val, **problem.kwargs), dtype=jnp.float64)
     ).ravel()
     f0_norm = jnp.linalg.norm(f0)
     f0_unit = f0 / jnp.where(f0_norm > 1e-30, f0_norm, 1.0)
 
-    n_mesh = N * n
-    dim_z = N * (m + 1) * n
-    dim_aug = dim_z + 1
-
-    def adjoint_operator(z_aug: jax.Array) -> jax.Array:
-        Z_mesh = z_aug[:n_mesh].reshape((N, n))
-        Z_gauss = z_aug[n_mesh:dim_z].reshape((N, m, n))
-        alpha = z_aug[dim_z]
-        Z_full = jnp.concatenate([Z_mesh[:, None, :], Z_gauss], axis=1)
-
-        dZ_dt = jnp.einsum("mj,Njd->Nmd", D, Z_full) / h[:, None, None]
-        jt_z = jnp.einsum("Nmji,Nmj->Nmi", Ju_all, Z_gauss)
-        res_coll = (dZ_dt + T * jt_z).ravel()
-
-        Z_end = jnp.einsum("j,Njd->Nd", C, Z_full)
-        res_cont = (Z_mesh[1:] - Z_end[:-1]).ravel()
-        # Keep all n periodic BC rows with rank-1 border alpha * f0_unit so L stays
-        # nonsingular regardless of which component of f0 is zero (#22).
-        res_bc = (Z_mesh[0] - Z_end[N - 1] + alpha * f0_unit).ravel()
-        res_norm = jnp.atleast_1d(jnp.dot(f0, Z_mesh[0]))
-
-        return jnp.concatenate([res_coll, res_cont, res_bc, res_norm])
-
-    L = jax.jacfwd(adjoint_operator)(jnp.zeros(dim_aug, dtype=jnp.float64))
-    rhs = jnp.zeros(dim_aug, dtype=jnp.float64).at[-1].set(omega_val)
-    sol_direct = jnp.linalg.solve(L, rhs)
-    sol = jax.lax.cond(
-        jnp.all(jnp.isfinite(sol_direct)),
-        lambda: sol_direct,
-        lambda: jnp.linalg.lstsq(L, rhs, rcond=1e-12)[0],
+    # Local adjoint collocation system on each interval k:
+    #   A_k^adj Z_gauss,k + B_k^adj Z_mesh,k = 0  =>  Z_gauss,k = -K_k^adj Z_mesh,k
+    A_blocks = (D[None, :, 1:] / h[:, None, None])[:, :, :, None, None] * eye_n[
+        None, None, None, :, :
+    ] + T_val * eye_m[None, :, :, None, None] * Ju_T_all[:, :, None, :, :]
+    A_all = jnp.swapaxes(A_blocks, 2, 3).reshape(N, m * n, m * n)
+    B_all = ((D[None, :, 0] / h[:, None])[:, :, None, None] * eye_n[None, None, :, :]).reshape(
+        N, m * n, n
     )
-    return sol[:n_mesh].reshape((N, n))
+
+    lu_A, piv_A = jax.vmap(jax.scipy.linalg.lu_factor)(A_all)
+    K_all = jax.vmap(lambda lu_k, piv_k, b_k: jax.scipy.linalg.lu_solve((lu_k, piv_k), b_k))(
+        lu_A, piv_A, B_all
+    )
+
+    # Endpoint map Z_end,k = M_k^adj Z_mesh,k
+    M_k = C[0] * eye_n[None, :, :] - jnp.einsum(
+        "j,Njab->Nab", C[1:], K_all.reshape(N, m, n, n)
+    )
+
+    # Condensed (N*n + 1) x (N*n + 1) system for [Z_mesh, alpha]:
+    #   Z_mesh,k+1 - M_k^adj Z_mesh,k = 0                      (k = 0..N-2)
+    #   Z_mesh,0   - M_{N-1}^adj Z_mesh,N-1 + alpha f0_unit = 0
+    #   f0^T Z_mesh,0 = omega_val
+    n_mesh = N * n
+    k_idx = jnp.arange(N)
+    cont_mat = jnp.zeros((N, n, N, n), dtype=jnp.float64)
+    cont_mat = cont_mat.at[k_idx, :, (k_idx + 1) % N, :].add(eye_n)
+    cont_mat = cont_mat.at[k_idx, :, k_idx, :].add(-M_k)
+    cont_mat = cont_mat.reshape(n_mesh, n_mesh)
+
+    M_cond = jnp.zeros((n_mesh + 1, n_mesh + 1), dtype=jnp.float64)
+    M_cond = M_cond.at[:n_mesh, :n_mesh].set(cont_mat)
+    # Keep all n periodic BC rows with rank-1 border alpha * f0_unit so M_cond stays
+    # nonsingular regardless of which component of f0 is zero (#22).
+    M_cond = M_cond.at[(N - 1) * n : n_mesh, n_mesh].set(f0_unit)
+    M_cond = M_cond.at[n_mesh, :n].set(f0)
+
+    rhs_cond = jnp.zeros(n_mesh + 1, dtype=jnp.float64).at[n_mesh].set(omega_arr)
+
+    lu_cond, piv_cond = jax.scipy.linalg.lu_factor(M_cond)
+    u_diag = jnp.abs(jnp.diag(lu_cond))
+    use_lu_cond = jnp.all(jnp.isfinite(lu_cond)) & (
+        jnp.min(u_diag) > rcond * (jnp.max(u_diag) + 1e-30)
+    )
+    sol_cond = jax.lax.cond(
+        use_lu_cond,
+        lambda: jax.scipy.linalg.lu_solve((lu_cond, piv_cond), rhs_cond),
+        lambda: jnp.linalg.lstsq(M_cond, rhs_cond, rcond=rcond)[0],
+    )
+    return sol_cond[:n_mesh].reshape((N, n))
 
 
 def _build_iprc_result(

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 
 from bifurx.bvp import CollocationProblem, solve_periodic_orbit
-from bifurx.prc import compute_iprc, continuation_iprc
+from bifurx.prc import _solve_adjoint_collocation_jax, compute_iprc, continuation_iprc
 
 
 def f_stuart_landau(u: jnp.ndarray, p: float = 0.0) -> jnp.ndarray:
@@ -183,3 +184,128 @@ def test_continuation_iprc_arclength_adaptive():
         f0 = f_vdp(item.orbit[0], float(res_arc.p[k]))
         expected_omega = 2.0 * float(jnp.pi) / float(item.period)
         assert abs(float(jnp.dot(item.Z[0], f0)) - expected_omega) < 1e-4
+
+
+def _solve_adjoint_dense_reference(
+    problem: CollocationProblem,
+    mesh: jax.Array,
+    u_mesh: jax.Array,
+    u_gauss: jax.Array,
+    T: jax.Array,
+    p: float | jax.Array,
+    omega_val: jax.Array,
+) -> jax.Array:
+    """Direct dense (N*(m+1)*n + 1) adjoint collocation reference solver."""
+    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
+    D = jnp.asarray(problem.D, dtype=jnp.float64)
+    C = jnp.asarray(problem.C, dtype=jnp.float64)
+    h = mesh[1:] - mesh[:-1]
+    p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
+
+    jac_fn = jax.jacobian(lambda u: problem.fn(u, p_val, **problem.kwargs))
+    Ju_all = jax.vmap(jax.vmap(jac_fn))(u_gauss)
+    f0 = jnp.atleast_1d(
+        jnp.asarray(problem.fn(u_mesh[0], p_val, **problem.kwargs), dtype=jnp.float64)
+    ).ravel()
+    f0_norm = jnp.linalg.norm(f0)
+    f0_unit = f0 / jnp.where(f0_norm > 1e-30, f0_norm, 1.0)
+
+    n_mesh = N * n
+    dim_z = N * (m + 1) * n
+    dim_aug = dim_z + 1
+
+    def adjoint_operator(z_aug: jax.Array) -> jax.Array:
+        Z_mesh = z_aug[:n_mesh].reshape((N, n))
+        Z_gauss = z_aug[n_mesh:dim_z].reshape((N, m, n))
+        alpha = z_aug[dim_z]
+        Z_full = jnp.concatenate([Z_mesh[:, None, :], Z_gauss], axis=1)
+
+        dZ_dt = jnp.einsum("mj,Njd->Nmd", D, Z_full) / h[:, None, None]
+        jt_z = jnp.einsum("Nmji,Nmj->Nmi", Ju_all, Z_gauss)
+        res_coll = (dZ_dt + T * jt_z).ravel()
+
+        Z_end = jnp.einsum("j,Njd->Nd", C, Z_full)
+        res_cont = (Z_mesh[1:] - Z_end[:-1]).ravel()
+        res_bc = (Z_mesh[0] - Z_end[N - 1] + alpha * f0_unit).ravel()
+        res_norm = jnp.atleast_1d(jnp.dot(f0, Z_mesh[0]))
+
+        return jnp.concatenate([res_coll, res_cont, res_bc, res_norm])
+
+    L = jax.jacfwd(adjoint_operator)(jnp.zeros(dim_aug, dtype=jnp.float64))
+    rhs = jnp.zeros(dim_aug, dtype=jnp.float64).at[-1].set(omega_val)
+    sol = jnp.linalg.solve(L, rhs)
+    return sol[:n_mesh].reshape((N, n))
+
+
+def test_condensed_adjoint_matches_dense_reference():
+    """Verify block-condensed adjoint solver matches dense reference to machine precision (#28)."""
+    N, m = 20, 4
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+
+    # 1. Van der Pol (moderately nonlinear mu = 1.5)
+    prob_vdp = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=m)
+    u_init_vdp = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
+    sol_vdp = solve_periodic_orbit(prob_vdp, u_init_vdp, T_init=7.0, p=1.5, tol=1e-10)
+    assert bool(sol_vdp.converged)
+
+    omega_vdp = 2.0 * jnp.pi / sol_vdp.period
+    Z_cond_vdp = _solve_adjoint_collocation_jax(
+        prob_vdp, sol_vdp.mesh, sol_vdp.u_mesh, sol_vdp.u_gauss, sol_vdp.period, 1.5, omega_vdp
+    )
+    Z_ref_vdp = _solve_adjoint_dense_reference(
+        prob_vdp, sol_vdp.mesh, sol_vdp.u_mesh, sol_vdp.u_gauss, sol_vdp.period, 1.5, omega_vdp
+    )
+    assert bool(jnp.allclose(Z_cond_vdp, Z_ref_vdp, rtol=1e-10, atol=1e-11)), (
+        f"VdP max diff: {float(jnp.max(jnp.abs(Z_cond_vdp - Z_ref_vdp)))}"
+    )
+
+    # 2. Stuart-Landau shifted so f0[-1] == 0 (tests rank-1 border alpha * f0_unit)
+    prob_sl = CollocationProblem(f_stuart_landau, dim=2, num_intervals=N, num_gauss_points=m)
+    u_init_sl = jnp.stack([-jnp.sin(t_grid), jnp.cos(t_grid)], axis=1)
+    sol_sl = solve_periodic_orbit(prob_sl, u_init_sl, T_init=6.28, p=0.0, tol=1e-10)
+    assert bool(sol_sl.converged)
+    assert abs(float(f_stuart_landau(sol_sl.u_mesh[0])[-1])) < 1e-8
+
+    omega_sl = 2.0 * jnp.pi / sol_sl.period
+    Z_cond_sl = _solve_adjoint_collocation_jax(
+        prob_sl, sol_sl.mesh, sol_sl.u_mesh, sol_sl.u_gauss, sol_sl.period, 0.0, omega_sl
+    )
+    Z_ref_sl = _solve_adjoint_dense_reference(
+        prob_sl, sol_sl.mesh, sol_sl.u_mesh, sol_sl.u_gauss, sol_sl.period, 0.0, omega_sl
+    )
+    assert bool(jnp.allclose(Z_cond_sl, Z_ref_sl, rtol=1e-10, atol=1e-11)), (
+        f"Stuart-Landau max diff: {float(jnp.max(jnp.abs(Z_cond_sl - Z_ref_sl)))}"
+    )
+
+
+def test_condensed_adjoint_large_n_and_jit():
+    """Verify block-condensed iPRC solver scales to N=60, m=4 and is jax.jit-compatible (#28)."""
+    N, m = 60, 4
+    mu = 0.5
+    prob = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=m)
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
+    sol = solve_periodic_orbit(prob, u_init, T_init=2.0 * jnp.pi, p=mu, tol=1e-10)
+    assert bool(sol.converged)
+
+    res_prc = compute_iprc(sol, p=mu)
+    assert res_prc.Z.shape == (N, 2)
+    assert bool(jnp.all(jnp.isfinite(res_prc.Z)))
+
+    f0 = f_vdp(sol.u_mesh[0], mu)
+    assert abs(float(jnp.dot(res_prc.Z[0], f0)) - float(res_prc.omega)) < 1e-11
+
+    solve_jit = jax.jit(
+        lambda mesh, um, ug, T, p_v, om: _solve_adjoint_collocation_jax(
+            prob, mesh, um, ug, T, p_v, om
+        )
+    )
+    Z_jit = solve_jit(
+        sol.mesh,
+        sol.u_mesh,
+        sol.u_gauss,
+        sol.period,
+        jnp.asarray(mu, dtype=jnp.float64),
+        res_prc.omega,
+    )
+    assert bool(jnp.allclose(Z_jit, res_prc.Z, rtol=1e-12, atol=1e-13))
