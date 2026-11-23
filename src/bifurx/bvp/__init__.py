@@ -9,7 +9,7 @@ from bifurx.bvp.collocation import (
     periodic_orbit_arclength_weights,
     solve_periodic_orbit,
 )
-from bifurx.bvp.floquet import compute_floquet_multipliers
+from bifurx.bvp.floquet import compute_floquet_multipliers, evaluate_floquet_diagnostics
 from bifurx.bvp.mesh import redistribute_mesh
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "collocation_matrices",
     "compute_floquet_multipliers",
     "continue_periodic_orbit",
+    "evaluate_floquet_diagnostics",
     "initialize_from_hopf",
     "periodic_orbit_arclength_weights",
     "redistribute_mesh",

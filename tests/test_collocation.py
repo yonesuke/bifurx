@@ -8,6 +8,7 @@ from bifurx.bvp import (
     CollocationProblem,
     compute_floquet_multipliers,
     continue_periodic_orbit,
+    evaluate_floquet_diagnostics,
     initialize_from_hopf,
     periodic_orbit_arclength_weights,
     redistribute_mesh,
@@ -488,3 +489,160 @@ def test_periodic_orbit_configurable_period_weight():
             param_mode="arclength",
             param_weight=-0.5,
         )
+
+
+def test_continue_periodic_orbit_floquet_monitoring_and_lpc():
+    """Verify in-scan Floquet monitoring detects stability flip and LPC fold (#B5)."""
+
+    def f_subcrit_sl(u: jnp.ndarray, p: float) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        amp = p + 2.0 * r2 - r2 * r2
+        return jnp.array([amp * x - y, x + amp * y])
+
+    N, m = 20, 4
+    prob = CollocationProblem(f_subcrit_sl, dim=2, num_intervals=N, num_gauss_points=m)
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+    r0 = float(jnp.sqrt(2.0))
+    u_init = jnp.stack([r0 * jnp.cos(t_grid), r0 * jnp.sin(t_grid)], axis=1)
+    sol0 = solve_periodic_orbit(prob, u_init, T_init=2.0 * jnp.pi, p=0.0, tol=1e-9)
+    assert bool(sol0.converged)
+
+    branch = continue_periodic_orbit(
+        prob,
+        initial_orbit=sol0,
+        p_start=0.0,
+        p_end=-1.5,
+        dp=0.15,
+        dp_max=0.25,
+        max_steps=35,
+        param_mode="arclength",
+        compute_floquet=True,
+    )
+    assert len(branch) >= 10
+    assert all(bool(s.converged) for s in branch)
+    assert branch[0].floquet_multipliers is not None
+    assert branch[0].is_stable is not None and bool(branch[0].is_stable)
+
+    p_vals = [float(s.p) for s in branch if s.p is not None]
+    assert min(p_vals) < -0.95
+    assert p_vals[-1] > min(p_vals) + 0.1
+    assert any(s.is_stable is not None and (not bool(s.is_stable)) for s in branch)
+
+    lpc_orbits = [s for s in branch if "LPC" in s.bifurcations]
+    assert len(lpc_orbits) >= 1
+    assert abs(float(lpc_orbits[0].p) - (-1.0)) < 0.2  # type: ignore[arg-type]
+
+
+def test_evaluate_floquet_diagnostics_pd_and_ns():
+    """Verify evaluate_floquet_diagnostics classifies stability, PD (-1), and NS (|mu|=1)."""
+    M_stable = jnp.diag(jnp.array([1.0, 0.5], dtype=jnp.float64))
+    mults_s, tf_s, is_s = evaluate_floquet_diagnostics(M_stable)
+    assert mults_s.shape == (2,)
+    assert bool(is_s)
+    assert float(tf_s["PD"]) > 0.0
+    assert bool(jnp.isnan(tf_s["NS"]))
+
+    # Period-doubling crossing: mu_2 = -0.8 -> -1.2
+    _, tf_pd_before, st_pd_before = evaluate_floquet_diagnostics(
+        jnp.diag(jnp.array([1.0, -0.8], dtype=jnp.float64))
+    )
+    _, tf_pd_after, st_pd_after = evaluate_floquet_diagnostics(
+        jnp.diag(jnp.array([1.0, -1.2], dtype=jnp.float64))
+    )
+    assert bool(st_pd_before) and not bool(st_pd_after)
+    assert float(tf_pd_before["PD"]) * float(tf_pd_after["PD"]) < 0.0
+
+    # Neimark-Sacker crossing: complex pair modulus r = 0.9 -> 1.1
+    th = 1.0
+    c, s = float(jnp.cos(th)), float(jnp.sin(th))
+    M_ns_before = jnp.array(
+        [[1.0, 0.0, 0.0], [0.0, 0.9 * c, -0.9 * s], [0.0, 0.9 * s, 0.9 * c]],
+        dtype=jnp.float64,
+    )
+    M_ns_after = jnp.array(
+        [[1.0, 0.0, 0.0], [0.0, 1.1 * c, -1.1 * s], [0.0, 1.1 * s, 1.1 * c]],
+        dtype=jnp.float64,
+    )
+    _, tf_ns_before, st_ns_before = evaluate_floquet_diagnostics(M_ns_before)
+    _, tf_ns_after, st_ns_after = evaluate_floquet_diagnostics(M_ns_after)
+    assert bool(st_ns_before) and not bool(st_ns_after)
+    assert float(tf_ns_before["NS"]) * float(tf_ns_after["NS"]) < 0.0
+    assert float(tf_ns_before["PD"]) > 0.0 and float(tf_ns_after["PD"]) > 0.0
+
+
+def test_continue_periodic_orbit_in_loop_adaptive_remeshing():
+    """Verify in-loop adaptive remeshing maintains smooth arclength progress on Van der Pol."""
+    mu0 = 0.5
+    N, m = 20, 4
+    prob = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=m)
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
+    sol0 = solve_periodic_orbit(prob, u_init, T_init=2.0 * jnp.pi, p=mu0, tol=1e-8)
+    assert bool(sol0.converged)
+
+    branch = continue_periodic_orbit(
+        prob,
+        initial_orbit=sol0,
+        p_start=mu0,
+        p_end=3.0,
+        dp=0.25,
+        dp_max=0.4,
+        max_steps=16,
+        param_mode="arclength",
+        remesh_interval=4,
+    )
+    assert len(branch) >= 8
+    assert all(bool(s.converged) for s in branch)
+    p_vals = [float(s.p) for s in branch if s.p is not None]
+    assert all(p2 > p1 for p1, p2 in zip(p_vals[:-1], p_vals[1:], strict=True))
+    assert p_vals[-1] > 2.0
+    assert float(branch[-1].period) > float(branch[0].period)
+    dh = jnp.diff(branch[-1].mesh)
+    assert float(jnp.max(dh) / jnp.min(dh)) > 1.4
+
+    with pytest.raises(ValueError, match="remesh_interval"):
+        continue_periodic_orbit(
+            prob,
+            initial_orbit=sol0,
+            p_start=mu0,
+            p_end=3.0,
+            remesh_interval=0,
+        )
+
+
+def test_initialize_from_hopf_auto_direction():
+    """Verify initialize_from_hopf(..., direction='auto') selects branch direction from l_1 * alpha'."""
+
+    def sl_super(u: jnp.ndarray, p: float) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        return jnp.array([p * x - y - x * r2, x + p * y - y * r2])
+
+    def sl_sub(u: jnp.ndarray, p: float) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        return jnp.array([p * x - y + x * r2, x + p * y + y * r2])
+
+    prob_super = CollocationProblem(sl_super, dim=2, num_intervals=15, num_gauss_points=3)
+    _, _, _, _, p_super = initialize_from_hopf(
+        prob_super, jnp.zeros(2), 0.0, eps=0.05, direction="auto"
+    )
+    assert float(p_super) > 0.0
+
+    prob_sub = CollocationProblem(sl_sub, dim=2, num_intervals=15, num_gauss_points=3)
+    _, _, _, _, p_sub = initialize_from_hopf(
+        prob_sub, jnp.zeros(2), 0.0, eps=0.05, direction="auto"
+    )
+    assert float(p_sub) < 0.0
+
+    prob_ab = CollocationProblem(f_ab, dim=2, num_intervals=20, num_gauss_points=3)
+    p1_hopf = 0.1309003
+    _, _, _, _, p_ab = initialize_from_hopf(
+        prob_ab,
+        jnp.array([0.8950809, 4.1770443]),
+        p1_hopf,
+        eps=0.05,
+        direction="auto",
+    )
+    assert float(p_ab) < p1_hopf

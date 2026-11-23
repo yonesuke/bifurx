@@ -1,32 +1,39 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import jax
 import jax.numpy as jnp
 
-from bifurx.bvp.collocation import PeriodicOrbitResult
+if TYPE_CHECKING:
+    from bifurx.bvp.collocation import CollocationProblem, PeriodicOrbitResult
 
 
-def _monodromy_condensation(
-    sol: PeriodicOrbitResult,
+def monodromy_condensation_raw(
+    problem: CollocationProblem,
+    mesh: jax.Array,
+    u_gauss: jax.Array,
+    period: jax.Array,
     p: float | jax.Array = 0.0,
 ) -> jax.Array:
-    """Compute the monodromy matrix M via de Boor-Swartz collocation Jacobian condensation."""
-    mesh = jnp.asarray(sol.mesh, dtype=jnp.float64)
-    u_gauss = jnp.asarray(sol.u_gauss, dtype=jnp.float64)
-    T = jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64))
-    N = sol.problem.num_intervals
-    m = sol.problem.num_gauss_points
-    n = sol.problem.dim
-    D = jnp.asarray(sol.problem.D, dtype=jnp.float64)
-    C = jnp.asarray(sol.problem.C, dtype=jnp.float64)
+    """Compute monodromy matrix M via de Boor-Swartz condensation directly from collocation arrays."""
+    mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
+    u_gauss_arr = jnp.asarray(u_gauss, dtype=jnp.float64)
+    T = jnp.squeeze(jnp.asarray(period, dtype=jnp.float64))
+    p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
+    N = problem.num_intervals
+    m = problem.num_gauss_points
+    n = problem.dim
+    D = jnp.asarray(problem.D, dtype=jnp.float64)
+    C = jnp.asarray(problem.C, dtype=jnp.float64)
 
-    jac_fn = jax.jacobian(lambda u_: sol.problem.fn(u_, p, **sol.problem.kwargs))
+    jac_fn = jax.jacobian(lambda u_: problem.fn(u_, p_val, **problem.kwargs))
     eye_n = jnp.eye(n, dtype=jnp.float64)
     eye_m = jnp.eye(m, dtype=jnp.float64)
 
     def interval_step(M_total: jax.Array, k: jax.Array) -> tuple[jax.Array, None]:
-        hk = mesh[k + 1] - mesh[k]
-        Ju_k = jax.vmap(jac_fn)(u_gauss[k])
+        hk = mesh_arr[k + 1] - mesh_arr[k]
+        Ju_k = jax.vmap(jac_fn)(u_gauss_arr[k])
 
         A_blocks = (D[:, 1:] / hk)[:, :, None, None] * eye_n[None, None, :, :] - T * eye_m[
             :, :, None, None
@@ -40,6 +47,50 @@ def _monodromy_condensation(
 
     M_total, _ = jax.lax.scan(interval_step, eye_n, jnp.arange(N))
     return M_total
+
+
+def _monodromy_condensation(
+    sol: PeriodicOrbitResult,
+    p: float | jax.Array = 0.0,
+) -> jax.Array:
+    """Compute the monodromy matrix M via de Boor-Swartz collocation Jacobian condensation."""
+    return monodromy_condensation_raw(
+        sol.problem,
+        jnp.asarray(sol.mesh, dtype=jnp.float64),
+        jnp.asarray(sol.u_gauss, dtype=jnp.float64),
+        jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64)),
+        p=p,
+    )
+
+
+def evaluate_floquet_diagnostics(
+    M: jax.Array,
+    tangent_p: jax.Array | None = None,
+    rel_tol: float = 1e-4,
+) -> tuple[jax.Array, dict[str, jax.Array], jax.Array]:
+    """Compute sorted Floquet multipliers, LPC/PD/NS test functions, and orbital stability."""
+    n = int(M.shape[0])
+    eigvals = jnp.linalg.eigvals(M)
+    idx = jnp.argsort(-jnp.abs(eigvals))
+    multipliers = eigvals[idx]
+
+    idx_triv = jnp.argmin(jnp.abs(multipliers - 1.0))
+    nontriv_mask = jnp.arange(n) != idx_triv
+    is_stable = jnp.all(jnp.where(nontriv_mask, jnp.abs(multipliers) < 1.0, True))
+
+    tf_pd = jnp.linalg.det(M + jnp.eye(n, dtype=jnp.float64))
+    complex_mask = nontriv_mask & (
+        jnp.abs(jnp.imag(multipliers)) > rel_tol * (1.0 + jnp.abs(multipliers))
+    )
+    has_complex = jnp.any(complex_mask)
+    ns_vals = jnp.where(complex_mask, jnp.abs(multipliers) - 1.0, -jnp.inf)
+    tf_ns = jnp.where(has_complex, jnp.max(ns_vals), jnp.nan)
+    tf_lpc = (
+        jnp.array(jnp.nan, dtype=jnp.float64)
+        if tangent_p is None
+        else jnp.squeeze(jnp.asarray(tangent_p, dtype=jnp.float64))
+    )
+    return multipliers, {"LPC": tf_lpc, "PD": tf_pd, "NS": tf_ns}, is_stable
 
 
 def _monodromy_variational(
