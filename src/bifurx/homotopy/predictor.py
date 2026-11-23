@@ -25,16 +25,25 @@ def estimate_pade_trust_region(
     z2: jax.Array,
     z3: jax.Array,
 ) -> jax.Array:
-    """Estimate Padé (2,1) trust region radius from component pole distances."""
+    """Estimate Padé (2,1) trust region radius from dominant component pole distances."""
     c1, c2, c3 = jnp.abs(z1), jnp.abs(z2), jnp.abs(z3)
     lam = jnp.maximum(1e-6, c1)
     s1 = c1 / lam
     s2 = c2 / (lam**2)
     s3 = c3 / (lam**3)
+    c2_max = jnp.max(c2)
+    c3_max = jnp.max(c3)
     tol = 1e-14 * jnp.maximum(s1, jnp.maximum(s2, s3))
-    valid = (s2 > tol) & (s3 > tol)
+    # Ignore negligible zero-crossing components whose z2/z3 ratio reflects a sign change, not a pole.
+    valid = (s2 > tol) & (s3 > tol) & (c2 > 1e-2 * c2_max) & (c3 > 1e-3 * c3_max)
     tau_i = jnp.where(valid, (s2 / jnp.where(valid, s3, 1.0)) / lam, jnp.inf)
-    return jnp.min(tau_i)
+    tau_comp = jnp.min(tau_i)
+    fallback = jnp.where(
+        (c3_max > 1e-14 * (1.0 + jnp.max(c1) + c2_max)) & (c2_max > 0.0),
+        c2_max / jnp.maximum(c3_max, 1e-30),
+        jnp.inf,
+    )
+    return jnp.where(jnp.any(valid), tau_comp, fallback)
 
 
 def compute_arclength_taylor3(
