@@ -221,3 +221,109 @@ def test_continuation_mixed_scale_components():
     assert abs(float(lps[0].p)) < 1e-5
     assert abs(float(lps[0].u[0]) - 1e4) < 1e-2
     assert abs(float(lps[0].u[1]) - 1e-4) < 1e-8
+
+
+def test_residual_scaling_invariance_corrector_and_tracker():
+    """Verify corrector and tracker are invariant to scalar and diagonal residual scaling."""
+    import jax
+
+    from bifurx.homotopy import compute_tangent, track_arclength_scan
+
+    def ab_base(u: jax.Array, p1: jax.Array) -> jax.Array:
+        u1, u2 = u[0], u[1]
+        e = jnp.exp(u2)
+        return jnp.array([-u1 + p1 * (1.0 - u1) * e, -u2 + p1 * 14.0 * (1.0 - u1) * e - 2.0 * u2])
+
+    u0 = jnp.array([0.0, 0.0], dtype=jnp.float64)
+    p0 = jnp.array(0.0, dtype=jnp.float64)
+
+    # 1. Adaptive Padé (2,1) tracker under scalar and diagonal residual scaling
+    diag_scale = jnp.array([1e-4, 1e4], dtype=jnp.float64)
+    adap_scales: list[float | jax.Array] = [1e-4, 1.0, 1e4, diag_scale]
+    adap_results = []
+    for sc in adap_scales:
+        fn = lambda u, p, s=sc: s * ab_base(u, p)
+        ju = jax.jacobian(fn, argnums=0)
+        jp = jax.jacobian(fn, argnums=1)
+        tau0 = compute_tangent(ju, jp, u0, p0)
+        adap_results.append(
+            track_arclength_scan(
+                fn,
+                ju,
+                jp,
+                u0,
+                p0,
+                tau0,
+                ds=0.03,
+                ds_max=0.08,
+                n_steps=40,
+                adaptive_step=True,
+                predictor="pade21",
+            )
+        )
+
+    ref_adap = adap_results[1]
+    assert bool(jnp.all(ref_adap.converged))
+    for res in adap_results:
+        assert bool(jnp.all(res.converged))
+        assert jnp.allclose(res.u, ref_adap.u, atol=1e-6)
+        assert jnp.allclose(res.p, ref_adap.p, atol=1e-6)
+        assert jnp.array_equal(res.iterations, ref_adap.iterations)
+        assert jnp.allclose(res.step_sizes, ref_adap.step_sizes, atol=1e-9)
+
+    # 2. Fixed-step tracker under scalar residual scaling
+    fixed_results = []
+    for sc in (1e-4, 1.0, 1e4):
+        fn = lambda u, p, s=sc: s * ab_base(u, p)
+        ju = jax.jacobian(fn, argnums=0)
+        jp = jax.jacobian(fn, argnums=1)
+        tau0 = compute_tangent(ju, jp, u0, p0)
+        fixed_results.append(
+            track_arclength_scan(
+                fn,
+                ju,
+                jp,
+                u0,
+                p0,
+                tau0,
+                ds=0.03,
+                n_steps=30,
+                adaptive_step=False,
+            )
+        )
+
+    ref_fixed = fixed_results[1]
+    assert bool(jnp.all(ref_fixed.converged))
+    for res in fixed_results:
+        assert bool(jnp.all(res.converged))
+        assert jnp.allclose(res.u, ref_fixed.u, atol=1e-7)
+        assert jnp.allclose(res.p, ref_fixed.p, atol=1e-7)
+        assert jnp.array_equal(res.iterations, ref_fixed.iterations)
+
+    # 3. Direct bordered_newton_solve on a scaled pitchfork problem
+    u_prev = jnp.array([1.0], dtype=jnp.float64)
+    p_prev = jnp.array(1.0, dtype=jnp.float64)
+    tau_prev = jnp.array([0.0, 1.0], dtype=jnp.float64)
+    ds = 0.05
+    u_init = u_prev + ds * tau_prev[:1]
+    p_init = p_prev + ds * tau_prev[-1]
+
+    newton_results = []
+    for sc in (1e-4, 1.0, 1e4):
+        prob = BifurcationProblem(
+            lambda u, p, s=sc: s * jnp.array([p * u[0] - u[0] ** 3]),
+            u0=[1.0],
+            p0=1.0,
+        )
+        newton_results.append(
+            bordered_newton_solve(prob, u_init, p_init, u_prev, p_prev, tau_prev, ds=ds)
+        )
+
+    ref_nw = newton_results[1]
+    assert bool(ref_nw.converged)
+    for res in newton_results:
+        assert bool(res.converged)
+        assert int(res.iterations) == int(ref_nw.iterations)
+        assert jnp.allclose(res.u, ref_nw.u, atol=1e-8)
+        assert jnp.allclose(res.p, ref_nw.p, atol=1e-8)
+        assert abs(float(res.u[0]) ** 2 - float(res.p)) < 1e-8
