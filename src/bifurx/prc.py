@@ -112,9 +112,7 @@ def _solve_adjoint_collocation_jax(
     )
 
     # Endpoint map Z_end,k = M_k^adj Z_mesh,k
-    M_k = C[0] * eye_n[None, :, :] - jnp.einsum(
-        "j,Njab->Nab", C[1:], K_all.reshape(N, m, n, n)
-    )
+    M_k = C[0] * eye_n[None, :, :] - jnp.einsum("j,Njab->Nab", C[1:], K_all.reshape(N, m, n, n))
 
     # Condensed (N*n + 1) x (N*n + 1) system for [Z_mesh, alpha]:
     #   Z_mesh,k+1 - M_k^adj Z_mesh,k = 0                      (k = 0..N-2)

@@ -197,7 +197,14 @@ def _draw_arrow(
     p1, p2 = _sketch_poly(arr, seed=seed, rough=0.018)
     ax.plot(p1[:, 0], p1[:, 1], color=color, lw=lw, ls=ls, solid_capstyle="round", zorder=3)
     ax.plot(
-        p2[:, 0], p2[:, 1], color=color, lw=lw * 0.6, ls=ls, alpha=0.55, solid_capstyle="round", zorder=3
+        p2[:, 0],
+        p2[:, 1],
+        color=color,
+        lw=lw * 0.6,
+        ls=ls,
+        alpha=0.55,
+        solid_capstyle="round",
+        zorder=3,
     )
     # Hand-drawn arrowhead at final segment
     v = arr[-1] - arr[-2]
@@ -210,7 +217,14 @@ def _draw_arrow(
         tip = arr[-1]
         left = tip - head_len * u + head_w * perp
         right = tip - head_len * u - head_w * perp
-        ax.plot([left[0], tip[0], right[0]], [left[1], tip[1], right[1]], color=color, lw=lw, solid_capstyle="round", zorder=4)
+        ax.plot(
+            [left[0], tip[0], right[0]],
+            [left[1], tip[1], right[1]],
+            color=color,
+            lw=lw,
+            solid_capstyle="round",
+            zorder=4,
+        )
     return {"type": "arrow", "points": [[p[0] * 60, -p[1] * 60] for p in pts], "strokeColor": color}
 
 
@@ -306,7 +320,9 @@ def make_e1_architecture() -> None:
     ]
 
     for idx, (x, title, sub, fill, stroke, seed) in enumerate(modules):
-        elems.append(_draw_box(ax, x, 0.45, 3.15, 2.05, title, sub, fill=fill, stroke=stroke, seed=seed))
+        elems.append(
+            _draw_box(ax, x, 0.45, 3.15, 2.05, title, sub, fill=fill, stroke=stroke, seed=seed)
+        )
         cx = x + 1.575
         top_x = 4.6 + idx * 1.73
         elems.append(_draw_arrow(ax, [(top_x, 3.95), (cx, 2.55)], color=stroke, seed=200 + idx))
@@ -444,8 +460,21 @@ def make_e2_tracker_flow() -> None:
         )
     )
     elems.append(_draw_arrow(ax, [(10.84, 2.20), (9.04, 2.52)], color="#b91c1c", seed=314, ls="--"))
-    ax.text(10.05, 2.66, "No (abort / fail)", fontsize=8.8, color="#b91c1c", fontweight="bold", family="Chalkboard SE", ha="center")
-    elems.append(_draw_arrow(ax, [(5.02, 2.52), (4.85, 2.52), (4.85, 3.81)], color="#b91c1c", seed=315, ls="--"))
+    ax.text(
+        10.05,
+        2.66,
+        "No (abort / fail)",
+        fontsize=8.8,
+        color="#b91c1c",
+        fontweight="bold",
+        family="Chalkboard SE",
+        ha="center",
+    )
+    elems.append(
+        _draw_arrow(
+            ax, [(5.02, 2.52), (4.85, 2.52), (4.85, 3.81)], color="#b91c1c", seed=315, ls="--"
+        )
+    )
 
     # Accept branch (bottom row): Step 4 -> Step 5 -> Next carry
     elems.append(
@@ -481,8 +510,19 @@ def make_e2_tracker_flow() -> None:
         )
     )
 
-    elems.append(_draw_arrow(ax, [(12.52, 1.32), (12.52, 0.87), (9.34, 0.87)], color="#15803d", seed=316))
-    ax.text(11.10, 1.12, "Yes (accept)", fontsize=8.8, color="#15803d", fontweight="bold", family="Chalkboard SE", ha="center")
+    elems.append(
+        _draw_arrow(ax, [(12.52, 1.32), (12.52, 0.87), (9.34, 0.87)], color="#15803d", seed=316)
+    )
+    ax.text(
+        11.10,
+        1.12,
+        "Yes (accept)",
+        fontsize=8.8,
+        color="#15803d",
+        fontweight="bold",
+        family="Chalkboard SE",
+        ha="center",
+    )
     elems.append(_draw_arrow(ax, [(5.02, 0.87), (4.44, 0.87)], color="#15803d", seed=317))
     elems.append(_draw_arrow(ax, [(1.52, 1.53), (1.52, 3.81)], color="#047857", seed=318))
 
@@ -566,7 +606,16 @@ def make_e3_iprc_pipeline() -> None:
 
     elems.append(_draw_arrow(ax, [(3.07, 3.38), (3.66, 3.38)], color="#334155", seed=410))
     elems.append(_draw_arrow(ax, [(8.38, 3.38), (9.01, 3.38)], color="#1e3a5f", seed=411))
-    ax.text(8.70, 3.85, "(u*_k, T_k)\nat p_k", fontsize=7.6, color="#1e3a5f", family="Chalkboard SE", ha="center", linespacing=1.05)
+    ax.text(
+        8.70,
+        3.85,
+        "(u*_k, T_k)\nat p_k",
+        fontsize=7.6,
+        color="#1e3a5f",
+        family="Chalkboard SE",
+        ha="center",
+        linespacing=1.05,
+    )
 
     # Bottom output box
     elems.append(
@@ -587,14 +636,40 @@ def make_e3_iprc_pipeline() -> None:
     )
 
     elems.append(_draw_arrow(ax, [(11.62, 2.57), (11.62, 1.74)], color="#15803d", seed=412))
-    ax.text(12.60, 2.15, "Z_k(theta) at each p_k", fontsize=8.6, color="#15803d", family="Chalkboard SE", ha="center")
+    ax.text(
+        12.60,
+        2.15,
+        "Z_k(theta) at each p_k",
+        fontsize=8.6,
+        color="#15803d",
+        family="Chalkboard SE",
+        ha="center",
+    )
 
     # Loop-back arrow showing parameter stepping p_0 -> p_1 -> ... -> p_end
-    elems.append(_draw_arrow(ax, [(6.02, 2.57), (6.02, 2.10), (4.65, 2.10), (4.65, 2.57)], color="#2563eb", seed=413, ls="--"))
-    ax.text(5.35, 1.88, "next step p_k -> p_{k+1}", fontsize=8.3, color="#2563eb", family="Chalkboard SE", ha="center")
+    elems.append(
+        _draw_arrow(
+            ax,
+            [(6.02, 2.57), (6.02, 2.10), (4.65, 2.10), (4.65, 2.57)],
+            color="#2563eb",
+            seed=413,
+            ls="--",
+        )
+    )
+    ax.text(
+        5.35,
+        1.88,
+        "next step p_k -> p_{k+1}",
+        fontsize=8.3,
+        color="#2563eb",
+        family="Chalkboard SE",
+        ha="center",
+    )
 
     fig.tight_layout(pad=0.2)
-    fig.savefig(os.path.join(OUT_DIR, "iprc_continuation_pipeline.png"), dpi=220, bbox_inches="tight")
+    fig.savefig(
+        os.path.join(OUT_DIR, "iprc_continuation_pipeline.png"), dpi=220, bbox_inches="tight"
+    )
     plt.close(fig)
     _save_excalidraw("iprc_continuation_pipeline", elems)
 
@@ -689,7 +764,18 @@ def make_e4_jax_autodiff_patterns() -> None:
     for x, y, w, h, title, sub, fill, stroke, seed in jvp_boxes:
         elems.append(
             _draw_box(
-                ax, x, y, w, h, title, sub, fill=fill, stroke=stroke, seed=seed, title_size=10.2, sub_size=8.3
+                ax,
+                x,
+                y,
+                w,
+                h,
+                title,
+                sub,
+                fill=fill,
+                stroke=stroke,
+                seed=seed,
+                title_size=10.2,
+                sub_size=8.3,
             )
         )
 

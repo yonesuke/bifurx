@@ -81,9 +81,12 @@ def test_cyclic_block_bidiagonal_arbitrary_sizes(N: int, n: int, b: int):
 
     # Verify residual directly in O(N n^2) for all sizes
     u_next = jnp.roll(u_mesh, shift=-1, axis=0)
-    res_cont = u_next - jnp.einsum("Nij,Nj->Ni", M_blocks, u_mesh) + jnp.einsum(
-        "Nib,b->Ni", S_blocks, w
-    ) - r_cont
+    res_cont = (
+        u_next
+        - jnp.einsum("Nij,Nj->Ni", M_blocks, u_mesh)
+        + jnp.einsum("Nib,b->Ni", S_blocks, w)
+        - r_cont
+    )
     res_border = jnp.einsum("Nbi,Ni->b", P_blocks, u_mesh) + D_border @ w - g_border
     rhs_norm = float(jnp.linalg.norm(jnp.concatenate([r_cont.ravel(), g_border])))
     sol_norm = float(jnp.linalg.norm(jnp.concatenate([u_mesh.ravel(), w])))
@@ -298,7 +301,9 @@ def test_jit_compatibility_and_no_dense_nn_matrix():
     rhs_g = jnp.array(-0.3, dtype=jnp.float64)
 
     @jax.jit
-    def jit_factor_and_solve_square(x_in: jax.Array, r_in: jax.Array) -> tuple[CondensedCollocationFactor, jax.Array]:
+    def jit_factor_and_solve_square(
+        x_in: jax.Array, r_in: jax.Array
+    ) -> tuple[CondensedCollocationFactor, jax.Array]:
         fac = factor_condensed_collocation(prob, x_in, p_val, mesh, dot_u_ref)
         dX = solve_condensed_collocation(fac, r_in)
         return fac, dX
