@@ -13,6 +13,7 @@ from bifurx.bifurcations import (
     hopf_augmented_residual,
     initial_null_vector,
     moore_spence_fold_residual,
+    test_func_hopf,
 )
 from bifurx.homotopy import compute_tangent, track_arclength_scan
 from bifurx.homotopy.corrector import correct_arclength_step
@@ -210,7 +211,7 @@ def continuation_codim2(
                 _tau_c: jax.Array,
                 _ju_c: jax.Array,
                 _jp_c: jax.Array,
-            ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
                 u_v, p1_v, p2_v, v_vec = _unpack_step(u_s, p_c)
                 A = jac_u_fn(u_v, p1_v, p2_v)
                 u_svd, _, _ = jnp.linalg.svd(A)
@@ -220,7 +221,8 @@ def continuation_codim2(
                     return jax.jvp(lambda y: fn(y, p1_v, p2_v, **kwargs), (z,), (v_vec,))[1]
 
                 b_vv = jax.jvp(_d_u, (u_v,), (v_vec,))[1]
-                return w_raw, v_vec, b_vv
+                tf_zh = test_func_hopf(A) if n >= 3 else jnp.array(jnp.nan, dtype=jnp.float64)
+                return w_raw, v_vec, b_vv, tf_zh
 
         else:
 
@@ -339,6 +341,8 @@ def continuation_codim2(
                 "CP": 0.5 * jnp.sum(w_aligned * b_vv_valid, axis=-1),
                 "BT": jnp.sum(w_aligned * v_valid, axis=-1),
             }
+            if n >= 3:
+                test_funcs_out["ZH"] = full_obs[3]
         elif n == 2:
             test_funcs_out = {"GH": full_obs[0], "BT": full_obs[1]}
         else:
