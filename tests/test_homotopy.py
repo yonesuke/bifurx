@@ -408,3 +408,120 @@ def test_natural_mode_exact_target_and_chart_accept_hooks() -> None:
         accept_fn=lambda u_c, _p_c: u_c[0] > 10.0,
     )
     assert not bool(jnp.any(res_rej.converged))
+
+
+def test_corrector_kantorovich_omega_and_singular_rejection() -> None:
+    """Verify Kantorovich final check, stiff sub-1e-7 omega estimation, and singular rejection."""
+    # 1. Kantorovich + final simplified-Newton accuracy check converges in 1 step in WeightedNorm
+    u_prev = jnp.array([1.0], dtype=jnp.float64)
+    p_prev = jnp.array(1.0, dtype=jnp.float64)
+    tau = compute_tangent(_fold_ju, _fold_jp, u_prev, p_prev, direction=1.0)
+    ds = jnp.array(0.05, dtype=jnp.float64)
+    u_tan, p_tan = tangent_predict(u_prev, p_prev, tau, ds)
+    res_exact = correct_arclength_step(
+        _fold_fn,
+        _fold_ju,
+        _fold_jp,
+        u_tan,
+        p_tan,
+        u_prev,
+        p_prev,
+        tau,
+        ds,
+        tol=1e-14,
+        step_tol=1e-14,
+    )
+    u_kant = res_exact.u + jnp.array([5e-5], dtype=jnp.float64)
+    p_kant = res_exact.p
+    w_kant = init_weighted_norm(jnp.concatenate([u_kant, jnp.atleast_1d(p_kant)]))
+    tol_kant = 1e-8
+    res_kant = correct_arclength_step(
+        _fold_fn,
+        _fold_ju,
+        _fold_jp,
+        u_kant,
+        p_kant,
+        u_prev,
+        p_prev,
+        tau,
+        ds,
+        weights=w_kant,
+        omega_init=2.0,
+        first_step=False,
+        tol=tol_kant,
+        step_tol=tol_kant,
+        enforce_contraction=True,
+    )
+    assert bool(res_kant.converged)
+    assert not bool(res_kant.terminated_early)
+    assert int(res_kant.iterations) == 1
+    assert float(res_kant.accuracy) <= tol_kant
+    assert float(res_kant.omega) != pytest.approx(0.5, abs=1e-3)
+
+    # 2. Stiff quadratic with prev_sw < 1e-7 still estimates omega above roundoff
+    def stiff_fn(u: jax.Array, p: jax.Array) -> jax.Array:
+        return jnp.array([p - 1e10 * (u[0] - 1.0) ** 2])
+
+    def stiff_ju(u: jax.Array, _p: jax.Array) -> jax.Array:
+        return jnp.array([[-2e10 * (u[0] - 1.0)]])
+
+    def stiff_jp(_u: jax.Array, _p: jax.Array) -> jax.Array:
+        return jnp.array([1.0])
+
+    u_sp = jnp.array([1.0 + 1e-8], dtype=jnp.float64)
+    p_sp = jnp.array(1e-6, dtype=jnp.float64)
+    tau_s = jnp.array([0.0, 1.0], dtype=jnp.float64)
+    res_stiff = correct_arclength_step(
+        stiff_fn,
+        stiff_ju,
+        stiff_jp,
+        jnp.array([1.0 + 6e-8], dtype=jnp.float64),
+        p_sp,
+        u_sp,
+        p_sp,
+        tau_s,
+        jnp.array(0.0, dtype=jnp.float64),
+        weights=jnp.ones(2, dtype=jnp.float64),
+        omega_init=0.0,
+        first_step=True,
+        tol=1e-10,
+        step_tol=1e-10,
+        enforce_contraction=False,
+        track_contraction=True,
+    )
+    assert bool(res_stiff.converged)
+    assert float(res_stiff.norm_dz0) < 1e-7
+    assert float(res_stiff.omega) > 1e6
+
+    # 3. Singular inconsistent system is rejected while consistent rank-deficient system passes
+    res_inconsistent = correct_arclength_step(
+        lambda _u, _p: jnp.array([1.0]),
+        lambda _u, _p: jnp.array([[0.0]]),
+        lambda _u, _p: jnp.array([0.0]),
+        jnp.array([0.0], dtype=jnp.float64),
+        jnp.array(0.0, dtype=jnp.float64),
+        jnp.array([0.0], dtype=jnp.float64),
+        jnp.array(0.0, dtype=jnp.float64),
+        jnp.array([0.0, 1.0], dtype=jnp.float64),
+        jnp.array(0.0, dtype=jnp.float64),
+    )
+    assert not bool(res_inconsistent.converged)
+    assert bool(res_inconsistent.terminated_early)
+
+    u_rd0 = jnp.array([0.5, 0.5], dtype=jnp.float64)
+    p_rd0 = jnp.array(1.0, dtype=jnp.float64)
+    tau_rd = jnp.array([0.5, 0.5, 1.0], dtype=jnp.float64)
+    tau_rd = tau_rd / jnp.linalg.norm(tau_rd)
+    res_consistent = correct_arclength_step(
+        lambda u, p: jnp.array([u[0] + u[1] - p, 2.0 * (u[0] + u[1] - p)]),
+        lambda _u, _p: jnp.array([[1.0, 1.0], [2.0, 2.0]]),
+        lambda _u, _p: jnp.array([-1.0, -2.0]),
+        u_rd0 + jnp.array([0.1, 0.0], dtype=jnp.float64),
+        p_rd0,
+        u_rd0,
+        p_rd0,
+        tau_rd,
+        jnp.array(0.05, dtype=jnp.float64),
+    )
+    assert bool(res_consistent.converged)
+    assert float(res_consistent.residual_norm) < 1e-8
