@@ -26,6 +26,7 @@ from bifurx.bvp.floquet import (
     monodromy_factors_condensation,
 )
 from bifurx.homotopy import BorderedOperatorSolver, compute_tangent, track_arclength_scan
+from bifurx.homotopy.corrector import correct_arclength_step
 from bifurx.options import CollocationOptions, ContinuationOptions
 
 
@@ -346,6 +347,126 @@ def initialize_from_hopf(
         p_init_arr = p_h + dir_val * step
 
     return mesh, u_mesh, u_gauss, T0, p_init_arr
+
+
+def branch_from_hopf(
+    problem: CollocationProblem,
+    u_hopf: ArrayLike,
+    p_hopf: float | jax.Array,
+    ds: float | jax.Array = 0.05,
+    period_weight: float | None = None,
+    param_weight: float = 1.0,
+    tol: float | None = None,
+    max_iters: int | None = None,
+    min_amplitude: float | None = None,
+    options: CollocationOptions | None = None,
+) -> PeriodicOrbitResult:
+    """Switch from a Hopf point onto the periodic orbit branch via arclength-bordered Newton.
+
+    Follows the AUTO-07P / MatCont Hopf branch-switching algorithm: starting from the
+    equilibrium baseline `(u_hopf, T0, p_hopf)` with vertical tangent
+    `tau0 = (cos(2*pi*t) v_r - sin(2*pi*t) v_i, dT=0, dp=0)`, solves jointly for
+    `(u(t), T, p)` at arclength distance `ds`. Automatically handles both supercritical
+    and subcritical Hopf bifurcations without fixed-parameter tuning.
+    """
+    base_opts = CollocationOptions() if options is None else options
+    tol_val = base_opts.tol if tol is None else float(tol)
+    max_iters_val = base_opts.max_iters if max_iters is None else int(max_iters)
+    min_amp_val = base_opts.min_amplitude if min_amplitude is None else float(min_amplitude)
+    t_w = float(base_opts.period_weight if period_weight is None else period_weight)
+    p_w = float(param_weight)
+    ds_val = jnp.squeeze(jnp.asarray(ds, dtype=jnp.float64))
+
+    u_h = jnp.asarray(u_hopf, dtype=jnp.float64)
+    p_h = jnp.squeeze(jnp.asarray(p_hopf, dtype=jnp.float64))
+
+    jac_u_fn = jax.jacobian(lambda u_, p_: problem.fn(u_, p_, **problem.kwargs), argnums=0)
+    Ju = jac_u_fn(u_h, p_h)
+    eigs, vecs = jnp.linalg.eig(Ju)
+    _, leading_real, omega = extract_leading_hopf_pair(Ju, eigs=eigs)
+    target_eig = leading_real + 1j * omega
+    T0 = 2.0 * jnp.pi / omega
+    vec = vecs[:, jnp.argmin(jnp.abs(eigs - target_eig))]
+
+    v_r, v_i = jnp.real(vec), jnp.imag(vec)
+    norm_v = jnp.sqrt(jnp.dot(v_r, v_r) + jnp.dot(v_i, v_i))
+    v_r, v_i = v_r / norm_v, v_i / norm_v
+
+    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
+    mesh = jnp.linspace(0.0, 1.0, N + 1, dtype=jnp.float64)
+    rho = jnp.asarray(problem.rho, dtype=jnp.float64)
+    hk = mesh[1:] - mesh[:-1]
+
+    t_mesh = mesh[:-1]
+    theta_mesh = 2.0 * jnp.pi * t_mesh
+    du_mesh = (
+        jnp.cos(theta_mesh)[:, None] * v_r[None, :] - jnp.sin(theta_mesh)[:, None] * v_i[None, :]
+    )
+
+    t_gauss = t_mesh[:, None] + hk[:, None] * rho[None, :]
+    theta_gauss = 2.0 * jnp.pi * t_gauss
+    du_gauss = (
+        jnp.cos(theta_gauss)[:, :, None] * v_r[None, None, :]
+        - jnp.sin(theta_gauss)[:, :, None] * v_i[None, None, :]
+    )
+    dot_u_ref = (
+        -2.0 * jnp.pi * jnp.sin(theta_gauss)[:, :, None] * v_r[None, None, :]
+        - 2.0 * jnp.pi * jnp.cos(theta_gauss)[:, :, None] * v_i[None, None, :]
+    )
+
+    u_mesh_eq = jnp.broadcast_to(u_h[None, :], (N, n))
+    u_gauss_eq = jnp.broadcast_to(u_h[None, None, :], (N, m, n))
+    X_eq = problem.pack_vars(u_mesh_eq, u_gauss_eq, T0)
+
+    tau_X_raw = problem.pack_vars(du_mesh, du_gauss, 0.0)
+    tau_raw = jnp.concatenate([tau_X_raw, jnp.zeros(1, dtype=jnp.float64)])
+    w_arc = periodic_orbit_arclength_weights(problem, mesh, period_weight=t_w, param_weight=p_w)
+    tau_norm = jnp.sqrt(jnp.maximum(jnp.dot(w_arc * tau_raw, tau_raw), 1e-30))
+    tau0 = tau_raw / tau_norm
+
+    X_pred = X_eq + ds_val * tau0[:-1]
+    p_pred = p_h
+
+    bordered_solver = make_collocation_bordered_solver(problem, mesh, dot_u_ref)
+
+    def _res_fn(X: jax.Array, p_val: jax.Array) -> jax.Array:
+        return problem.residual(X, p_val, mesh, dot_u_ref=dot_u_ref)
+
+    res = correct_arclength_step(
+        residual_fn=_res_fn,
+        u_init=X_pred,
+        p_init=p_pred,
+        u_prev=X_eq,
+        p_prev=p_h,
+        tau_prev=tau0,
+        ds=ds_val,
+        tol=tol_val,
+        step_tol=tol_val,
+        rel_tol=min(tol_val, 1e-10),
+        max_iters=max_iters_val,
+        border_c=w_arc[:-1] * tau0[:-1],
+        border_d=w_arc[-1] * tau0[-1],
+        bordered_solver=bordered_solver,
+    )
+
+    u_mesh_sol, u_gauss_sol, T_sol = problem.unpack_vars(res.u)
+    conv = (
+        res.converged
+        & jnp.isfinite(T_sol)
+        & (T_sol > 0.0)
+        & (_orbit_amplitude(u_mesh_sol) >= min_amp_val)
+    )
+    return PeriodicOrbitResult(
+        mesh=mesh,
+        u_mesh=u_mesh_sol,
+        u_gauss=u_gauss_sol,
+        period=T_sol,
+        converged=conv,
+        iterations=res.iterations,
+        residual_norm=res.residual_norm,
+        problem=problem,
+        p=res.p,
+    )
 
 
 def solve_periodic_orbit(
