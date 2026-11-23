@@ -1,19 +1,49 @@
-# Structured Linear Algebra for Periodic-Orbit Collocation BVPs
+# Orthogonal Collocation, Structured Linear Algebra & Adaptive Meshing
 
-Solving a periodic orbit by Gauss-Legendre orthogonal collocation produces a large, sparse, nonlinear algebraic system $H_{\text{BVP}}(X, p) = 0$ of dimension $N(m+1)n + 1$, where $N$ is the number of mesh subintervals, $m$ is the number of interior Gauss-Legendre collocation points per subinterval, and $n$ is the state dimension.
+Solving a periodic orbit or general two-point boundary value problem (TPBVP) by Gauss–Legendre orthogonal collocation produces a large, sparse, nonlinear algebraic system $H_{\text{BVP}}(X, p) = 0$ of dimension $N(m+1)n + 1$, where $N$ is the number of mesh subintervals, $m$ is the number of interior Gauss–Legendre collocation points per subinterval, and $n$ is the state dimension.
 
 During Newton correction and Keller pseudo-arclength continuation, every iteration requires solving a linear system (square or bordered) with the collocation Jacobian. A naive dense factorization scales as $\mathcal{O}\!\left((N(m+1)n)^3\right)$ in time and $\mathcal{O}\!\left((N(m+1)n)^2\right)$ in memory—prohibitive even for moderate $N$ and $n$.
 
-In `bifurx.bvp.condensation`, this cost is reduced to **strictly linear in $N$**—$\mathcal{O}(N m^3 n^3 + N n^3)$ time and $\mathcal{O}(N m^2 n^2 + N n^2)$ memory—through a **two-stage structured elimination** implemented in pure, JIT-compiled JAX:
-
-1. **Stage 1 (de Boor–Swartz Block Condensation)**: Parallel elimination of all interior Gauss-stage unknowns $\Delta u_{k, 1:m}$ on every subinterval via `jax.vmap(lu_factor)`.
-2. **Stage 2 (Orthogonal Cyclic Block-QR Elimination)**: Numerically stable $\mathcal{O}(N n^3)$ elimination of the condensed cyclic block-bidiagonal + border system via `jax.lax.scan`, following Wright (1992) and Ascher–Mattheij–Russell (1995).
+This document presents the complete numerical theory behind `bifurx.bvp`:
+1. **Gauss–Legendre Orthogonal Collocation** (`bvp.collocation`): Golub–Welsch node generation, Lagrange differentiation matrices, and why $\mathcal{O}(h^{2m})$ superconvergence occurs.
+2. **Two-Stage Structured Elimination** (`bvp.condensation`): Strictly linear-in-$N$ solves—$\mathcal{O}(N m^3 n^3 + N n^3)$ time and $\mathcal{O}(N m^2 n^2 + N n^2)$ memory—via parallel de Boor–Swartz condensation (`jax.vmap(lu_factor)`) followed by $\mathcal{O}(N n^3)$ orthogonal cyclic block-QR elimination (`jax.lax.scan`, Wright 1992; Ascher–Mattheij–Russell 1995).
+3. **Adaptive Mesh Redistribution & $L^2$ Tangent Transfer** (`bvp.mesh`): de Boor's equidistribution principle for stiff relaxation oscillations and continuous $L^2$ tangent re-orientation across mesh changes.
 
 ![Two-stage block condensation and O(N n^3) orthogonal cyclic block-QR elimination](figures/collocation_condensation_blocks.png)
 
 ---
 
-## 1. Structure of the Linearized Collocation System
+## 1. Foundations of Gauss–Legendre Orthogonal Collocation (`bvp.collocation`)
+
+### 1.1 Golub–Welsch Node & Weight Generation (`_gauss_legendre_nodes`)
+The $m$ Gauss–Legendre quadrature nodes $\rho_1 < \dots < \rho_m \in (0, 1)$ are the shifted roots of the degree-$m$ Legendre polynomial $P_m(2\xi - 1)$. Rather than using iterative root-finding, `bifurx` computes them to full `float64` machine precision in pure JAX via the **Golub–Welsch algorithm** (1969). From the three-term recurrence of orthonormal Legendre polynomials on $[-1, 1]$, the symmetric tridiagonal Jacobi matrix
+
+$$J_m = \begin{pmatrix} 0 & \beta_1 & & \\ \beta_1 & 0 & \ddots & \\ & \ddots & \ddots & \beta_{m-1} \\ & & \beta_{m-1} & 0 \end{pmatrix}, \qquad \beta_k = \frac{k}{\sqrt{4k^2 - 1}}$$
+
+has eigenvalues $\lambda_i \in (-1, 1)$ and normalized eigenvectors $v^{(i)}$ (`jnp.linalg.eigh`) yielding:
+
+$$\rho_i = \frac{\lambda_i + 1}{2}, \qquad w_i = \left(v^{(i)}_0\right)^2, \qquad \sum_{i=1}^m w_i = 1$$
+
+### 1.2 Lagrange Differentiation & Endpoint Extrapolation (`collocation_matrices`)
+On the reference interval $[0, 1]$, `bifurx` defines $m + 1$ interpolation nodes $s = (0, \rho_1, \dots, \rho_m)$ and their degree-$m$ Lagrange basis polynomials $L_j(\xi) = \prod_{\ell \ne j} \frac{\xi - s_\ell}{s_j - s_\ell}$. Two small reference arrays are precomputed once per `CollocationProblem`:
+- **Differentiation matrix** $D \in \mathbb{R}^{m \times (m+1)}$ with $D_{ij} = L'_j(\rho_i)$, evaluated exactly via `jax.vmap(jax.jacfwd(...))`.
+- **Right-endpoint extrapolation weights** $C \in \mathbb{R}^{m+1}$ with $C_j = L_j(1)$, enforcing $C^0$ continuity $u_{k+1, 0} = \sum_{j=0}^m C_j u_{k, j}$.
+
+### 1.3 Why $\mathcal{O}(h^{2m})$ Superconvergence Occurs (de Boor–Swartz Theorem)
+A degree-$m$ piecewise polynomial normally approximates a smooth trajectory to global accuracy $\mathcal{O}(h^{m+1})$. At the **mesh nodes** $\tau_k$, however, Gauss–Legendre collocation achieves **superconvergence of order $\mathcal{O}(h^{2m})$** (de Boor & Swartz, 1973; e.g., $\mathcal{O}(h^8)$ for the default $m = 4$).
+
+The mechanism rests on orthogonality of the Legendre polynomials:
+1. Because the ODE residual $r(\tau) = \dot{u}_h(\tau) - T f(u_h(\tau))$ vanishes at all $m$ Gauss points $\tau_{k, i}$ on subinterval $k$, it factors locally as $r(\tau) = P_m\!\left(\frac{2(\tau - \tau_k)}{h_k} - 1\right) g_k(\tau)$, where $g_k(\tau) = \mathcal{O}(h_k^m)$.
+2. By the linearized BVP Green's function $G(\tau_k, s)$, the error at any mesh node $\tau_k$ is an integral over all subintervals:
+   $$e(\tau_k) = \sum_{j=0}^{N-1} \int_{\tau_j}^{\tau_{j+1}} G(\tau_k, s) \, r(s) \, ds$$
+3. On each subinterval $[\tau_j, \tau_{j+1}]$, $G(\tau_k, s)$ is smooth ($C^\infty$) because the discontinuity of $G$ occurs **only at mesh nodes** $s = \tau_k$, never inside an interval! Expanding $G(\tau_k, s) g_j(s)$ in a Taylor series up to degree $m - 1$, every term of degree $< m$ is **strictly orthogonal to $P_m$** and integrates to zero. The first surviving term is of order $h_j^m \cdot h_j^m = \mathcal{O}(h_j^{2m})$!
+
+> [!NOTE]
+> **General Two-Point BVPs**: While `bifurx.bvp` specializes in periodic orbits ($u(1) - u(0) = 0$ plus the Poincaré integral phase condition), the exact same Gauss–Legendre discretization $(D, C, \rho, w)$ applies directly to non-periodic two-point BVPs with general boundary conditions $B(u(0), u(1)) = 0$—as demonstrated on the nonlinear Gelfand–Bratu problem in [Demo 7: Bratu BVP](../../notebooks/07_demo_bratu_bvp.ipynb).
+
+---
+
+## 2. Structure of the Linearized Collocation System
 
 On subinterval $k \in \{0, \dots, N-1\}$ with width $h_k = \tau_{k+1} - \tau_k$, the unknowns are the left mesh value $u_{k, 0} \in \mathbb{R}^n$ and the $m$ interior Gauss-stage values $u_{k, 1:m} \in \mathbb{R}^{mn}$, together with the scalar period $T$ (and, in pseudo-arclength continuation, the scalar continuation parameter $p$).
 
@@ -34,7 +64,7 @@ Linearizing the collocation BVP residual around $(X, p)$ yields three coupled gr
 
 ---
 
-## 2. Stage 1: de Boor–Swartz Block Condensation
+## 3. Stage 1: de Boor–Swartz Block Condensation
 
 The key observation of de Boor & Swartz (1973) is that the interior Gauss unknowns $\Delta u_{k, 1:m}$ on subinterval $k$ appear **only** inside block $k$'s collocation equations, block $k$'s continuity equation, and the $b$ global scalar rows. They never couple directly to $\Delta u_{j, 1:m}$ for $j \ne k$.
 
@@ -63,7 +93,7 @@ Once $(u_{\text{mesh}}, w)$ is obtained, $\Delta u_{k, 1:m}$ is recovered in one
 
 ---
 
-## 3. Why Naive Elimination of the Condensed System Fails
+## 4. Why Naive Elimination of the Condensed System Fails
 
 At first glance, the condensed system looks easy to collapse by forward substitution: $u_1 = M_0 u_0 + \dots$, $u_2 = M_1 M_0 u_0 + \dots$, leading to $(I_n - M_{N-1} \cdots M_0) u_0 + \dots = \dots$. In practice, **this naive elimination fails for two fundamental reasons**:
 
@@ -75,11 +105,11 @@ At first glance, the condensed system looks easy to collapse by forward substitu
 
 ---
 
-## 4. Stage 2: $\mathcal{O}(N n^3)$ Orthogonal Block-QR Cyclic Elimination
+## 5. Stage 2: $\mathcal{O}(N n^3)$ Orthogonal Block-QR Cyclic Elimination
 
 To achieve $\mathcal{O}(N n^3)$ complexity **without** forming unscaled monodromy products and **without** ever inverting the singular unbordered block $C_{\text{cont}}$, `bifurx` implements sequential orthogonal block-QR row reduction (`factor_cyclic_block_bidiagonal` / `solve_cyclic_block_bidiagonal`), following Wright (1992) and Ascher–Mattheij–Russell (1995).
 
-### 4.1 Forward Orthogonal Elimination (`jax.lax.scan`)
+### 5.1 Forward Orthogonal Elimination (`jax.lax.scan`)
 Maintain an active coupling equation linking $u_0$, the current interior node $u_{k+1}$, and the border unknowns $w$:
 
 $$A_{\text{cur}} \, u_0 + B_{\text{cur}} \, u_{k+1} + S_{\text{cur}} \, w = r_{\text{cur}}$$
@@ -109,7 +139,7 @@ $$P_0 \leftarrow P_0 - W_k E_k, \qquad P_{\text{cur}} \leftarrow P_{k+2} - W_k F
 
 Because every elimination step applies an **orthogonal matrix $Q_k^T$**, the 2-norm conditioning of the active rows is preserved at every interval—even when $\prod M_k$ has eigenvalues $10^{\pm 60}$.
 
-### 4.2 Tiny $(n + b) \times (n + b)$ Reduced System & Back-Substitution
+### 5.2 Tiny $(n + b) \times (n + b)$ Reduced System & Back-Substitution
 After $N - 1$ steps, $u_{(k+2)\bmod N}$ wraps around to $u_0$, collapsing the entire $(Nn + b) \times (Nn + b)$ system into a tiny **nonsingular** $(n + b) \times (n + b)$ reduced system coupling only $(u_0, w)$:
 
 $$M_{\text{red}} \begin{pmatrix} u_0 \\ w \end{pmatrix} = \begin{pmatrix} A_{\text{fin}} + B_{\text{fin}} & S_{\text{fin}} \\ P_{0, \text{fin}} + P_{\text{cur}, \text{fin}} & D_{\text{fin}} \end{pmatrix} \begin{pmatrix} u_0 \\ w \end{pmatrix} = \begin{pmatrix} r_{\text{fin}} \\ g_{\text{fin}} \end{pmatrix}$$
@@ -122,7 +152,7 @@ This works identically for **any** $N \ge 1$ (no power-of-2 restriction) and nev
 
 ---
 
-## 5. Complexity & Memory Scaling
+## 6. Complexity & Memory Scaling
 
 | Method | Factorization Time | Solve Time (Reused Factor) | Memory | Dense $(Nn)^2$ Allocation? |
 | :--- | :--- | :--- | :--- | :---: |
@@ -132,22 +162,61 @@ This works identically for **any** $N \ge 1$ (no power-of-2 restriction) and nev
 
 ---
 
-## 6. Implementation Mapping in `bifurx`
+## 7. Adaptive Mesh Redistribution & $L^2$ Tangent Transfer (`bvp.mesh`)
 
-| Component | Symbol in `bifurx.bvp.condensation` | Role |
+On stiff relaxation oscillations (e.g., Van der Pol at large $\mu$, FitzHugh–Nagumo spikes) or orbits approaching homoclinic connections, a uniform mesh wastes intervals on slow manifolds while under-resolving narrow transition layers. `bifurx.bvp.mesh` implements pure-JAX adaptive mesh redistribution (`redistribute_mesh`) analogous to AUTO-07P's `ADPTDS`.
+
+![Adaptive mesh equidistribution via cumulative monitor function and continuous L2 tangent transfer](figures/adaptive_mesh_equidistribution.png)
+
+### 7.1 de Boor's Equidistribution Principle & Monitor Function
+Following de Boor (1974), an optimal mesh $0 = \tau_0 < \tau_1 < \dots < \tau_N = 1$ **equidistributes** a positive monitor density $w(\tau) > 0$ so that every subinterval carries the same integrated weight:
+
+$$\int_{\tau_k}^{\tau_{k+1}} w(\tau) \, d\tau = \frac{1}{N} \int_0^1 w(\tau) \, d\tau, \qquad k = 0, \dots, N - 1$$
+
+In `_equidistribute_mesh`, the monitor function combines arclength and curvature terms evaluated at the Gauss collocation nodes:
+
+$$w(\tau) = \sqrt{1 + \alpha \|\dot{u}(\tau)\|_2^2 + \beta \|\ddot{u}(\tau)\|_2^{2/3}}$$
+
+The $2/3$ exponent on the curvature term comes directly from piecewise-polynomial interpolation error theory: the local error on interval $k$ scales as $h_k^3 \|\ddot{u}\|_2$, so equalizing $h_k^3 \|\ddot{u}\|_2 \approx \text{const}$ requires $h_k \propto \|\ddot{u}\|_2^{-1/3}$, i.e., a monitor density proportional to $\|\ddot{u}\|_2^{1/3} = \left(\|\ddot{u}\|_2^{2/3}\right)^{1/2}$.
+
+### 7.2 Cumulative Inversion, Damping & Minimum Width Guard
+Integrating $w(\tau)$ over each current subinterval by $m$-point Gauss–Legendre quadrature gives $I_k = h_k \sum_{i=1}^m w_i w(\tau_{k,i})$ and the cumulative distribution $W_k = \sum_{j < k} I_j$. Inverting $W(\tau)$ at uniform target levels $W_{\text{target}, k} = \frac{k}{N} W_N$ via linear interpolation yields the equidistributed mesh $\tau^{\text{equi}}$. To prevent mesh oscillations across continuation steps, `bifurx` applies a damped update with a strict minimum subinterval width $h_{\min} = 10^{-4} / N$:
+
+$$\tau^{\text{new}} = (1 - \gamma) \tau^{\text{old}} + \gamma \tau^{\text{equi}} \qquad (\text{default } \gamma = 0.7)$$
+
+The current orbit $(u_{\text{mesh}}, u_{\text{gauss}})$ is then evaluated on $\tau^{\text{new}}$ via its piecewise Lagrange representation (`sol.evaluate`) and re-converged with `solve_periodic_orbit`.
+
+### 7.3 Continuous $L^2$ Tangent Re-Orientation Across Remeshing
+When `continue_periodic_orbit(..., remesh_interval=K)` redistributes the mesh between `jax.lax.scan` chunks, a subtle geometric issue arises: the new mesh $\mathcal{T}_{\text{new}}$ changes the coordinates of the discrete state vector $X = (u_{\text{mesh}}, u_{\text{gauss}}, T)$, so taking a naive Euclidean dot product between the old tangent $\tau_{\text{old}}$ and the freshly computed unit tangent $\tau_{\text{new}}$ is meaningless and can accidentally **reverse the continuation direction**.
+
+Instead, `continue_periodic_orbit` treats the old tangent's orbit component as a continuous piecewise polynomial $\dot{u}_{\text{old}}(\tau)$, evaluates it at the **new** Gauss nodes $\tau_{k, i}^{\text{new}}$, and aligns the sign of $\tau_{\text{new}}$ via the continuous $L^2([0, 1])$ inner product:
+
+$$\langle \tau_{\text{old}}, \tau_{\text{new}} \rangle_{L^2} = \sum_{k=0}^{N-1} h_k^{\text{new}} \sum_{i=1}^m w_i \langle \dot{u}_{\text{old}}(\tau_{k,i}^{\text{new}}), \dot{u}_{\text{new}}(\tau_{k,i}^{\text{new}}) \rangle + w_T^2 \dot{T}_{\text{old}}\dot{T}_{\text{new}} + w_p^2 \dot{p}_{\text{old}}\dot{p}_{\text{new}}$$
+
+flipping $\tau_{\text{new}} \leftarrow -\tau_{\text{new}}$ whenever $\langle \tau_{\text{old}}, \tau_{\text{new}} \rangle_{L^2} < 0$. This preserves smooth branch orientation even across aggressive mesh adaptations.
+
+---
+
+## 8. Implementation Mapping in `bifurx`
+
+| Component | Symbol in `bifurx.bvp` | Role |
 | :--- | :--- | :--- |
-| Structured cyclic factor | `CyclicBlockBidiagonalFactor` | PyTree `NamedTuple` storing $(Q, R, E, G, W)$ and reduced $(n+b)\times(n+b)$ factor |
-| Stage 2 factorization | `factor_cyclic_block_bidiagonal` | $\mathcal{O}(N n^3)$ orthogonal block-QR elimination via `jax.lax.scan` |
-| Stage 2 solve | `solve_cyclic_block_bidiagonal` | Forward orthogonal sweep + reduced LU/`lstsq` + reverse triangular back-substitution |
-| Full 2-stage factor | `factor_condensed_collocation` | Parallel `vmap` Stage 1 condensation + Stage 2 cyclic factorization |
-| Square / Bordered solves | `solve_condensed_collocation`, `solve_condensed_bordered` | Reusable solves for `solve_periodic_orbit` and `track_arclength_scan` |
-| Homotopy bridge | `make_collocation_bordered_solver` | Plugs directly into `bifurx.homotopy.BorderedOperatorSolver` |
+| Golub–Welsch & matrices | `collocation.collocation_matrices` | Computes Gauss–Legendre $(\rho, w)$, differentiation $D$, and endpoint extrapolation $C$ |
+| Structured cyclic factor | `condensation.CyclicBlockBidiagonalFactor` | PyTree `NamedTuple` storing $(Q, R, E, G, W)$ and reduced $(n+b)\times(n+b)$ factor |
+| Stage 2 factorization | `condensation.factor_cyclic_block_bidiagonal` | $\mathcal{O}(N n^3)$ orthogonal block-QR elimination via `jax.lax.scan` |
+| Stage 2 solve | `condensation.solve_cyclic_block_bidiagonal` | Forward orthogonal sweep + reduced LU/`lstsq` + reverse triangular back-substitution |
+| Full 2-stage factor | `condensation.factor_condensed_collocation` | Parallel `vmap` Stage 1 condensation + Stage 2 cyclic factorization |
+| Square / Bordered solves | `condensation.solve_condensed_collocation`, `solve_condensed_bordered` | Reusable solves for `solve_periodic_orbit` and `track_arclength_scan` |
+| Homotopy bridge | `condensation.make_collocation_bordered_solver` | Plugs directly into `bifurx.homotopy.BorderedOperatorSolver` |
+| Adaptive remeshing | `mesh.redistribute_mesh` | Equidistributed mesh update, polynomial interpolation, and re-solve |
 
 ---
 
 ## References
 
-1. C. de Boor & B. Swartz, *Collocation at Gaussian points*, SIAM J. Numer. Anal. **10**(4), 582–606 (1973).
-2. S. J. Wright, *Stable parallel algorithms for two-point boundary value problems*, SIAM J. Sci. Stat. Comput. **13**(3), 742–764 (1992).
-3. U. M. Ascher, R. M. M. Mattheij & R. D. Russell, *Numerical Solution of Boundary Value Problems for Ordinary Differential Equations*, SIAM Classics in Applied Mathematics (1995).
-4. E. J. Doedel et al., *AUTO-07P: Continuation and Bifurcation Software for Ordinary Differential Equations* (2007).
+1. G. H. Golub & J. H. Welsch, *Calculation of Gauss quadrature rules*, Math. Comp. **23**(106), 221–230 (1969).
+2. C. de Boor & B. Swartz, *Collocation at Gaussian points*, SIAM J. Numer. Anal. **10**(4), 582–606 (1973).
+3. C. de Boor, *Good approximation by splines with variable knots II*, Lecture Notes in Mathematics **363**, 12–20 (1974).
+4. S. J. Wright, *Stable parallel algorithms for two-point boundary value problems*, SIAM J. Sci. Stat. Comput. **13**(3), 742–764 (1992).
+5. U. M. Ascher, R. M. M. Mattheij & R. D. Russell, *Numerical Solution of Boundary Value Problems for Ordinary Differential Equations*, SIAM Classics in Applied Mathematics (1995).
+6. E. J. Doedel et al., *AUTO-07P: Continuation and Bifurcation Software for Ordinary Differential Equations* (2007).
