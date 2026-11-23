@@ -221,3 +221,57 @@ def test_codim2_zero_hopf_on_fold_curve():
     assert abs(zhs[0].p2) < 1e-2
     assert res_lp_zh.test_funcs is not None
     assert "ZH" in res_lp_zh.test_funcs
+
+
+def test_codim2_singularity_refinement_precision():
+    """Verify safeguarded secant/bisection refinement locates codim-2 points to high precision."""
+
+    # Bimodal Kuramoto 2D Cartesian reduction (Martens et al. 2009):
+    # HB curve is Delta = 1.0 (omega0 > 1), with BT-like singularity A at (omega0=1, Delta=1).
+    def f_bimodal_xy(u: jnp.ndarray, omega0: float, delta: float) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        dx = (1.0 - 0.5 * delta) * x - 0.5 * omega0 * y - x**3 + x * y**2
+        dy = -0.5 * delta * y + 0.5 * omega0 * x - 2.0 * x**2 * y
+        return jnp.array([dx, dy])
+
+    res_hb = continuation_codim2(
+        f_bimodal_xy,
+        bif_type="HB",
+        u_init=[0.0, 0.0],
+        p1_init=1.5,
+        p2_init=1.0,
+        ds=0.07,
+        ds_max=0.1,
+        direction=-1.0,
+        param_orient_index=0,
+        p1_bounds=(0.7, 1.6),
+        max_steps=20,
+    )
+    bts = res_hb.get_singularities("BT")
+    assert len(bts) == 1
+    assert abs(bts[0].p1 - 1.0) < 1e-9, f"BT p1 not refined: {bts[0].p1}"
+    assert abs(bts[0].p2 - 1.0) < 1e-9, f"BT p2 not refined: {bts[0].p2}"
+    assert abs(bts[0].details["test_func_refined"]) < 1e-9
+
+    # Cusp normal form: exact CP at (p1=0, p2=0, u=0) even with coarse ds=0.08
+    def f_cusp(u: jnp.ndarray, p1: float, p2: float) -> jnp.ndarray:
+        return jnp.array([p1 + p2 * u[0] - u[0] ** 3])
+
+    res_cp = continuation_codim2(
+        f_cusp,
+        bif_type="LP",
+        u_init=[0.5],
+        p1_init=-0.25,
+        p2_init=0.75,
+        ds=0.08,
+        ds_max=0.1,
+        direction=1.0,
+        param_orient_index=0,
+        p1_bounds=(-0.5, 0.5),
+        max_steps=30,
+    )
+    cps = res_cp.get_singularities("CP")
+    assert len(cps) == 1
+    assert abs(cps[0].p1) < 1e-8, f"CP p1 not refined: {cps[0].p1}"
+    assert abs(cps[0].p2) < 1e-8, f"CP p2 not refined: {cps[0].p2}"
+    assert abs(float(cps[0].u[0])) < 1e-8

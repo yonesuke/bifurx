@@ -334,6 +334,7 @@ def continuation_codim2(
             jnp.concatenate([jnp.expand_dims(i_v, axis=0), o_v], axis=0)[keep][valid_mask]
             for i_v, o_v in zip(init_obs, scan_res.observer, strict=True)
         )
+        w_aligned: jax.Array | None = None
         if bif_type_upper == "LP":
             w_aligned = _align_null_vectors(full_obs[0])
             v_valid, b_vv_valid = full_obs[1], full_obs[2]
@@ -350,6 +351,38 @@ def continuation_codim2(
 
         n_pts = int(p1_out.shape[0])
         if n_pts >= 2:
+
+            def _eval_codim2_tf(
+                label_name: str,
+                us_pt: jax.Array,
+                pc_pt: jax.Array,
+                w_ref: jax.Array | None,
+            ) -> float:
+                obs_pt = step_obs(
+                    us_pt,
+                    pc_pt,
+                    tau0,
+                    jac_u_aug(us_pt, pc_pt),
+                    jac_p_aug(us_pt, pc_pt),
+                )
+                if bif_type_upper == "LP":
+                    w_raw_pt, v_pt, b_vv_pt, tf_zh_pt = obs_pt
+                    if label_name == "ZH":
+                        return float(tf_zh_pt)
+                    w_use = (
+                        jnp.where(jnp.dot(w_ref, w_raw_pt) < 0.0, -w_raw_pt, w_raw_pt)
+                        if w_ref is not None
+                        else w_raw_pt
+                    )
+                    if label_name == "CP":
+                        return float(0.5 * jnp.sum(w_use * b_vv_pt))
+                    return float(jnp.sum(w_use * v_pt))
+                if label_name == "GH":
+                    return float(obs_pt[0])
+                if label_name == "BT":
+                    return float(obs_pt[1])
+                return float(obs_pt[2])
+
             for label, tf_arr in test_funcs_out.items():
                 valid_pairs = (
                     jnp.isfinite(tf_arr[:-1])
@@ -358,11 +391,9 @@ def continuation_codim2(
                 )
                 for k in jnp.nonzero(valid_pairs)[0].tolist():
                     tf0, tf1 = float(tf_arr[k]), float(tf_arr[k + 1])
-                    alpha = float(jnp.clip(-tf0 / (tf1 - tf0), 0.0, 1.0))
                     us_k, pc_k = u_state_valid[k], p_cont_valid[k]
                     us_k1, pc_k1 = u_state_valid[k + 1], p_cont_valid[k + 1]
-                    us_mid = (1.0 - alpha) * us_k + alpha * us_k1
-                    pc_mid = (1.0 - alpha) * pc_k + alpha * pc_k1
+                    w_ref_k = w_aligned[k] if w_aligned is not None else None
 
                     dz_seg = jnp.concatenate([us_k1, jnp.atleast_1d(pc_k1)]) - jnp.concatenate(
                         [us_k, jnp.atleast_1d(pc_k)]
@@ -371,26 +402,64 @@ def continuation_codim2(
                     tau_seg = jnp.where(
                         ds_seg > 1e-12, dz_seg / jnp.maximum(ds_seg, 1e-30), tau_scan_valid[k]
                     )
-                    pol = correct_arclength_step(
-                        residual_fn=problem_fn,
-                        jac_u_fn=jac_u_aug,
-                        jac_p_fn=jac_p_aug,
-                        u_init=us_mid,
-                        p_init=pc_mid,
-                        u_prev=us_k,
-                        p_prev=pc_k,
-                        tau_prev=tau_seg,
-                        ds=alpha * ds_seg,
-                        tol=opts.newton.tol,
-                        step_tol=opts.newton.step_tol,
-                        max_iters=6,
-                    )
-                    pol_ok = bool(
-                        pol.converged & jnp.all(jnp.isfinite(pol.u)) & jnp.isfinite(pol.p)
-                    )
-                    us_fin = pol.u if pol_ok else us_mid
-                    pc_fin = pol.p if pol_ok else pc_mid
-                    u_pt, p1_pt, p2_pt, _ = _unpack_step(us_fin, pc_fin)
+
+                    a_lo, a_hi = 0.0, 1.0
+                    f_lo, f_hi = tf0, tf1
+                    us_best = (1.0 - 0.5) * us_k + 0.5 * us_k1
+                    pc_best = (1.0 - 0.5) * pc_k + 0.5 * pc_k1
+                    tf_best = min(abs(tf0), abs(tf1))
+                    ref_iters = 0
+                    tf_tol = max(float(opts.newton.tol), 1e-10)
+
+                    for it in range(1, 16):
+                        ref_iters = it
+                        span = a_hi - a_lo
+                        if span < 1e-12:
+                            break
+                        if abs(f_hi - f_lo) > 1e-30:
+                            a_sec = a_lo - f_lo * span / (f_hi - f_lo)
+                        else:
+                            a_sec = 0.5 * (a_lo + a_hi)
+                        margin = 0.05 * span
+                        if a_lo + margin < a_sec < a_hi - margin:
+                            alpha = a_sec
+                        else:
+                            alpha = 0.5 * (a_lo + a_hi)
+
+                        us_guess = (1.0 - alpha) * us_k + alpha * us_k1
+                        pc_guess = (1.0 - alpha) * pc_k + alpha * pc_k1
+                        pol = correct_arclength_step(
+                            residual_fn=problem_fn,
+                            jac_u_fn=jac_u_aug,
+                            jac_p_fn=jac_p_aug,
+                            u_init=us_guess,
+                            p_init=pc_guess,
+                            u_prev=us_k,
+                            p_prev=pc_k,
+                            tau_prev=tau_seg,
+                            ds=alpha * ds_seg,
+                            tol=opts.newton.tol,
+                            step_tol=opts.newton.step_tol,
+                            max_iters=8,
+                        )
+                        pol_ok = bool(
+                            pol.converged & jnp.all(jnp.isfinite(pol.u)) & jnp.isfinite(pol.p)
+                        )
+                        us_cand = pol.u if pol_ok else us_guess
+                        pc_cand = pol.p if pol_ok else pc_guess
+                        f_mid = _eval_codim2_tf(label, us_cand, pc_cand, w_ref_k)
+                        if not jnp.isfinite(f_mid):
+                            break
+
+                        us_best, pc_best, tf_best = us_cand, pc_cand, f_mid
+                        if abs(f_mid) <= tf_tol:
+                            break
+                        if f_lo * f_mid <= 0.0:
+                            a_hi, f_hi = alpha, f_mid
+                        else:
+                            a_lo, f_lo = alpha, f_mid
+
+                    u_pt, p1_pt, p2_pt, _ = _unpack_step(us_best, pc_best)
                     singularities.append(
                         Codim2Point(
                             bif_type=label,
@@ -398,7 +467,12 @@ def continuation_codim2(
                             p1=float(p1_pt),
                             p2=float(p2_pt),
                             step=k + 1,
-                            details={"test_func_before": tf0, "test_func_after": tf1},
+                            details={
+                                "test_func_before": tf0,
+                                "test_func_after": tf1,
+                                "test_func_refined": float(tf_best),
+                                "refinement_iters": ref_iters,
+                            },
                         )
                     )
         singularities.sort(key=lambda pt: pt.step)
