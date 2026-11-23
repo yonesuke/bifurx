@@ -156,6 +156,103 @@ def test_pade_taylor_coefficients_and_trust_region() -> None:
     assert float(err) > 0.0
 
 
+def test_pade_trust_region_scale_invariance_and_froissart_doublets() -> None:
+    """Verify scale invariance, arclength equivariance, cubic inflections, and doublet immunity."""
+    # 1. Exact diagonal scaling invariance: (D z_k, D w) -> identical trust region
+    z1 = jnp.array([0.8, -0.3, 1.2, -0.5], dtype=jnp.float64)
+    z2 = jnp.array([0.4, 0.25, -0.6, 0.1], dtype=jnp.float64)
+    z3 = jnp.array([0.2, -0.5, 0.3, 0.05], dtype=jnp.float64)
+    w = jnp.array([1.5, 0.5, 2.0, 0.8], dtype=jnp.float64)
+    d = jnp.array([1e4, 1e-4, 1e2, 1e-2], dtype=jnp.float64)
+
+    tr = estimate_pade_trust_region(z1, z2, z3, weights=w)
+    tr_scaled = estimate_pade_trust_region(d * z1, d * z2, d * z3, weights=d * w)
+    assert bool(jnp.isfinite(tr)) and float(tr) > 0.0
+    assert float(tr_scaled) == pytest.approx(float(tr), rel=1e-12)
+
+    # 2. Arclength rescaling equivariance: s -> beta * s scales trust region by 1 / beta
+    for beta in (1e-4, 7.5, 1e4):
+        tr_beta = estimate_pade_trust_region(beta * z1, (beta**2) * z2, (beta**3) * z3, weights=w)
+        assert float(tr_beta) == pytest.approx((1.0 / beta) * float(tr), rel=1e-12)
+
+    # 3. High-dimensional Froissart doublet immunity (unit and weighted scales)
+    n_dim = 50
+    z1_hd = jnp.ones(n_dim, dtype=jnp.float64)
+    z2_hd = jnp.zeros(n_dim, dtype=jnp.float64).at[:5].set(1e-9).at[5:10].set(1.0)
+    z3_hd = jnp.zeros(n_dim, dtype=jnp.float64).at[:5].set(1.0).at[5:10].set(0.5)
+    tr_hd_unit = estimate_pade_trust_region(z1_hd, z2_hd, z3_hd)
+    assert float(tr_hd_unit) == pytest.approx(1.0, rel=1e-12)
+
+    w_hd = jnp.geomspace(1e-3, 1e4, n_dim, dtype=jnp.float64)
+    tr_hd_weighted = estimate_pade_trust_region(
+        w_hd * z1_hd, w_hd * z2_hd, w_hd * z3_hd, weights=w_hd
+    )
+    assert float(tr_hd_weighted) == pytest.approx(1.0, rel=1e-12)
+
+    # 4. Global pure-cubic inflection returns inf
+    tr_cubic = estimate_pade_trust_region(
+        jnp.array([1.0, 0.0], dtype=jnp.float64),
+        jnp.array([0.0, 0.0], dtype=jnp.float64),
+        jnp.array([1.0, 0.0], dtype=jnp.float64),
+    )
+    assert bool(jnp.isinf(tr_cubic))
+
+    # 5. compute_arclength_taylor3 with diagonal rescaling of exp_fn
+    def exp_fn(u: jax.Array, p: jax.Array) -> jax.Array:
+        return jnp.array([u[0] - jnp.exp(p)])
+
+    u_e = jnp.array([1.0], dtype=jnp.float64)
+    p_e = jnp.array(0.0, dtype=jnp.float64)
+    w_e = jnp.array([1.5, 0.7], dtype=jnp.float64)
+    w_arc_e = 1.0 / (w_e**2)
+    ju_e = jax.jacobian(lambda u_v: exp_fn(u_v, p_e))(u_e)
+    jp_e = jax.jacobian(lambda p_v: exp_fn(u_e, p_v))(p_e)
+    tau_e = compute_tangent(
+        lambda _u, _p: ju_e, lambda _u, _p: jp_e, u_e, p_e, arclength_weights=w_arc_e
+    )
+    z2_e, z3_e, tr_e = compute_arclength_taylor3(
+        exp_fn,
+        u_e,
+        p_e,
+        tau_e,
+        ju_e,
+        jp_e,
+        border_c=w_arc_e[:1] * tau_e[:1],
+        border_d=w_arc_e[-1] * tau_e[-1],
+        weights=w_e,
+    )
+
+    d_u = jnp.array([1e3], dtype=jnp.float64)
+    d_p = jnp.array(1e-2, dtype=jnp.float64)
+    d_vec = jnp.concatenate([d_u, jnp.atleast_1d(d_p)])
+
+    def exp_scaled(u_tilde: jax.Array, p_tilde: jax.Array) -> jax.Array:
+        return exp_fn(u_tilde / d_u, p_tilde / d_p)
+
+    u_t = d_u * u_e
+    p_t = d_p * p_e
+    w_t = d_vec * w_e
+    w_arc_t = 1.0 / (w_t**2)
+    ju_t = jax.jacobian(lambda u_v: exp_scaled(u_v, p_t))(u_t)
+    jp_t = jax.jacobian(lambda p_v: exp_scaled(u_t, p_v))(p_t)
+    tau_t = d_vec * tau_e
+    z2_t, z3_t, tr_t = compute_arclength_taylor3(
+        exp_scaled,
+        u_t,
+        p_t,
+        tau_t,
+        ju_t,
+        jp_t,
+        border_c=w_arc_t[:1] * tau_t[:1],
+        border_d=w_arc_t[-1] * tau_t[-1],
+        weights=w_t,
+    )
+    assert bool(jnp.isfinite(tr_e)) and float(tr_e) > 0.0
+    assert jnp.allclose(z2_t, d_vec * z2_e, rtol=1e-12, atol=0.0)
+    assert jnp.allclose(z3_t, d_vec * z3_e, rtol=1e-12, atol=0.0)
+    assert float(tr_t) == pytest.approx(float(tr_e), rel=1e-12)
+
+
 def test_corrector_contraction_early_abort_and_stepsize_control() -> None:
     """Verify contraction-rate early abort, machine-precision safety, and Timme stepsize law."""
     params = TrackerParameters()
