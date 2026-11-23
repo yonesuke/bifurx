@@ -1,0 +1,160 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "bifurx-docs",
+  "elements": [
+    {
+      "type": "rectangle",
+      "x": 15.0,
+      "y": -141.0,
+      "width": 186.0,
+      "height": 129.0,
+      "strokeColor": "#334155",
+      "backgroundColor": "#f1f5f9",
+      "roughness": 1,
+      "label": "Pure-JAX Model\nF(u, p) : R^n x R -> R^n\nPyTree Problem &\nOptions (float64)"
+    },
+    {
+      "type": "rectangle",
+      "x": 261.0,
+      "y": -273.0,
+      "width": 291.0,
+      "height": 72.0,
+      "strokeColor": "#1d4ed8",
+      "backgroundColor": "#dbeafe",
+      "roughness": 1,
+      "label": "1st-Order JVP  (O(n) mem)\nMatrix-free GMRES matvec & operator\nresidual verification (homotopy.bordered)"
+    },
+    {
+      "type": "rectangle",
+      "x": 582.0,
+      "y": -273.0,
+      "width": 300.0,
+      "height": 72.0,
+      "strokeColor": "#0369a1",
+      "backgroundColor": "#e0f2fe",
+      "roughness": 1,
+      "label": "2nd-Order Nested JVP\nABE coefficients c_11, c_12, c_22 &\nCusp test <w, D^2F[v, v]> (bifurcations / codim2)"
+    },
+    {
+      "type": "rectangle",
+      "x": 261.0,
+      "y": -174.0,
+      "width": 291.0,
+      "height": 72.0,
+      "strokeColor": "#6d28d9",
+      "backgroundColor": "#ede9fe",
+      "roughness": 1,
+      "label": "3rd-Order Nested JVP\nPad\u00e9 (2,1) Taylor coeffs (z_2, z_3) &\nKuznetsov l_1 forms B, C (no O(n^4) tensors!)"
+    },
+    {
+      "type": "rectangle",
+      "x": 582.0,
+      "y": -174.0,
+      "width": 300.0,
+      "height": 72.0,
+      "strokeColor": "#15803d",
+      "backgroundColor": "#dcfce7",
+      "roughness": 1,
+      "label": "vmap + jacfwd Parallelism\nParallel subinterval Jacobians & LU\nin de Boor-Swartz condensation (bvp / prc)"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          202.79999999999998,
+          -237.0
+        ],
+        [
+          258.0,
+          -309.0
+        ]
+      ],
+      "strokeColor": "#1d4ed8"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          202.79999999999998,
+          -213.0
+        ],
+        [
+          258.0,
+          -210.0
+        ]
+      ],
+      "strokeColor": "#6d28d9"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          553.8000000000001,
+          -309.0
+        ],
+        [
+          579.6,
+          -309.0
+        ]
+      ],
+      "strokeColor": "#0369a1"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          553.8000000000001,
+          -210.0
+        ],
+        [
+          579.6,
+          -210.0
+        ]
+      ],
+      "strokeColor": "#15803d"
+    },
+    {
+      "type": "rectangle",
+      "x": 15.0,
+      "y": -21.0,
+      "width": 867.0,
+      "height": 93.0,
+      "strokeColor": "#b45309",
+      "backgroundColor": "#fef3c7",
+      "roughness": 1,
+      "label": "Static-Shape XLA Execution (jax.lax.scan + jax.lax.while_loop)\nFixed-length scan with `is_active` mask & `jnp.where` state freezing  \u2022  Zero Python overhead per step\nAdaptive step retry inside scan  \u2022  Outer chunking only for topology-changing mesh redistribution"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          405.0,
+          -171.6
+        ],
+        [
+          405.0,
+          -117.0
+        ]
+      ],
+      "strokeColor": "#b45309"
+    },
+    {
+      "type": "arrow",
+      "points": [
+        [
+          732.0,
+          -171.6
+        ],
+        [
+          732.0,
+          -117.0
+        ]
+      ],
+      "strokeColor": "#b45309"
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff"
+  }
+}
