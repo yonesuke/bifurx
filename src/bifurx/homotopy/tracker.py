@@ -185,7 +185,15 @@ def track_arclength_scan(
         Jp0 = jp0_fn(u_cur, p_cur)
         bc0, bd0 = _border_for(tau_cur)
         z2_0, z3_0, tr_0 = compute_arclength_taylor3(
-            res0_fn, u_cur, p_cur, tau_cur, Ju0, Jp0, border_c=bc0, border_d=bd0
+            res0_fn,
+            u_cur,
+            p_cur,
+            tau_cur,
+            Ju0,
+            Jp0,
+            border_c=bc0,
+            border_d=bd0,
+            weights=w0,
         )
     else:
         z2_0 = jnp.zeros(n + 1, dtype=jnp.float64)
@@ -338,6 +346,7 @@ def track_arclength_scan(
                 Jp_cand,
                 border_c=bc_cand,
                 border_d=bd_cand,
+                weights=w_step,
             )
         else:
             z2_cand, z3_cand, tr_cand = z2, z3, tr
