@@ -19,7 +19,12 @@ from bifurx.bvp.condensation import (
     make_collocation_bordered_solver,
     solve_condensed_collocation,
 )
-from bifurx.bvp.floquet import evaluate_floquet_diagnostics, monodromy_condensation_raw
+from bifurx.bvp.floquet import (
+    evaluate_floquet_diagnostics,
+    evaluate_floquet_diagnostics_from_factors,
+    monodromy_condensation_raw,
+    monodromy_factors_condensation,
+)
 from bifurx.homotopy import BorderedOperatorSolver, compute_tangent, track_arclength_scan
 from bifurx.options import CollocationOptions, ContinuationOptions
 
@@ -507,6 +512,7 @@ def continue_periodic_orbit(
     predictor: str | None = None,
     adaptive_step: bool | None = None,
     compute_floquet: bool = False,
+    floquet_method: str = "periodic_qr",
     remesh_interval: int | None = None,
     mesh_alpha: float = 1.0,
     mesh_damping: float = 0.7,
@@ -515,6 +521,13 @@ def continue_periodic_orbit(
     if param_mode not in ("natural", "arclength"):
         msg = f"Unknown param_mode: {param_mode}. Choose from 'natural' or 'arclength'."
         raise ValueError(msg)
+    if floquet_method not in ("periodic_qr", "periodic_schur", "condensation"):
+        msg = (
+            f"Unknown floquet_method: {floquet_method}. "
+            "Choose from 'periodic_qr', 'periodic_schur', or 'condensation'."
+        )
+        raise ValueError(msg)
+    use_periodic_schur = floquet_method in ("periodic_qr", "periodic_schur")
     if remesh_interval is not None and remesh_interval <= 0:
         msg = f"remesh_interval must be positive, got {remesh_interval}."
         raise ValueError(msg)
@@ -571,10 +584,18 @@ def continue_periodic_orbit(
         )
 
     if compute_floquet:
-        M0 = monodromy_condensation_raw(
-            problem, init_mesh, initial_orbit.u_gauss, initial_orbit.period, p=p_s
-        )
-        init_mults, init_tf_fl, init_stable = evaluate_floquet_diagnostics(M0)
+        if use_periodic_schur:
+            factors0 = monodromy_factors_condensation(
+                problem, init_mesh, initial_orbit.u_gauss, initial_orbit.period, p=p_s
+            )
+            init_mults, init_tf_fl, init_stable = evaluate_floquet_diagnostics_from_factors(
+                factors0
+            )
+        else:
+            M0 = monodromy_condensation_raw(
+                problem, init_mesh, initial_orbit.u_gauss, initial_orbit.period, p=p_s
+            )
+            init_mults, init_tf_fl, init_stable = evaluate_floquet_diagnostics(M0)
         initial_orbit = initial_orbit._replace(
             floquet_multipliers=init_mults, is_stable=init_stable
         )
@@ -669,6 +690,9 @@ def continue_periodic_orbit(
             _jp_c: Any,
         ) -> tuple[jax.Array, dict[str, jax.Array], jax.Array]:
             _, u_g_c, T_c = problem.unpack_vars(X_c)
+            if use_periodic_schur:
+                factors_c = monodromy_factors_condensation(problem, mesh_seg, u_g_c, T_c, p=p_c)
+                return evaluate_floquet_diagnostics_from_factors(factors_c, tangent_p=tau_c[-1])
             M_c = monodromy_condensation_raw(problem, mesh_seg, u_g_c, T_c, p=p_c)
             return evaluate_floquet_diagnostics(M_c, tangent_p=tau_c[-1])
 

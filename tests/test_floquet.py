@@ -340,3 +340,57 @@ def test_evaluate_floquet_diagnostics_from_factors_and_jit():
         compute_floquet_multipliers(sol, p=0.2, method="invalid")
     with pytest.raises(ValueError, match="Unknown method"):
         compute_floquet_exponents(sol, p=0.2, method="invalid")
+
+
+def test_continue_periodic_orbit_uses_periodic_schur_floquet():
+    """Verify continue_periodic_orbit(compute_floquet=True) uses Periodic Real Schur by default."""
+    N, m = 40, 4
+    prob = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=m)
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
+    sol0 = solve_periodic_orbit(prob, u_init, T_init=6.66, p=1.0, tol=1e-9)
+    assert bool(sol0.converged)
+
+    branch_qr = continue_periodic_orbit(
+        prob,
+        initial_orbit=sol0,
+        p_start=1.0,
+        p_end=2.0,
+        dp=0.5,
+        max_steps=5,
+        param_mode="natural",
+        compute_floquet=True,
+        tol=1e-8,
+    )
+    branch_cond = continue_periodic_orbit(
+        prob,
+        initial_orbit=sol0,
+        p_start=1.0,
+        p_end=2.0,
+        dp=0.5,
+        max_steps=5,
+        param_mode="natural",
+        compute_floquet=True,
+        floquet_method="condensation",
+        tol=1e-8,
+    )
+    assert len(branch_qr) == len(branch_cond) >= 2
+    for orb_qr, orb_c in zip(branch_qr, branch_cond, strict=True):
+        assert orb_qr.floquet_multipliers is not None
+        assert orb_c.floquet_multipliers is not None
+        assert bool(orb_qr.is_stable) is True
+        assert jnp.allclose(
+            _sort_complex_eigs(orb_qr.floquet_multipliers),
+            _sort_complex_eigs(orb_c.floquet_multipliers),
+            atol=1e-8,
+        )
+
+    with pytest.raises(ValueError, match="Unknown floquet_method"):
+        continue_periodic_orbit(
+            prob,
+            initial_orbit=sol0,
+            p_start=1.0,
+            p_end=2.0,
+            compute_floquet=True,
+            floquet_method="invalid",
+        )
