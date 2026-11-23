@@ -14,8 +14,13 @@ from bifurx.bifurcations import (
     extract_leading_hopf_pair,
     test_func_hopf,
 )
+from bifurx.bvp.condensation import (
+    factor_condensed_collocation,
+    make_collocation_bordered_solver,
+    solve_condensed_collocation,
+)
 from bifurx.bvp.floquet import evaluate_floquet_diagnostics, monodromy_condensation_raw
-from bifurx.homotopy import compute_tangent, track_arclength_scan
+from bifurx.homotopy import BorderedOperatorSolver, compute_tangent, track_arclength_scan
 from bifurx.options import CollocationOptions, ContinuationOptions
 
 
@@ -389,13 +394,13 @@ def solve_periodic_orbit(
     p_arr = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
     T_init_arr = jnp.squeeze(jnp.asarray(T_init, dtype=jnp.float64))
     X_init = problem.pack_vars(u_mesh_arr, u_gauss_arr, T_init_arr)
+    h_arr = mesh_arr[1:] - mesh_arr[:-1]
+    U_ref = jnp.concatenate([u_ref_mesh_arr[:, None, :], u_ref_gauss_arr], axis=1)
+    dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_arr[:, None, None]
 
     def eval_res(x_vec: jax.Array) -> jax.Array:
-        return problem.residual(
-            x_vec, p_arr, mesh_arr, u_ref_mesh=u_ref_mesh_arr, u_ref_gauss=u_ref_gauss_arr
-        )
+        return problem.residual(x_vec, p_arr, mesh_arr, dot_u_ref=dot_u_ref)
 
-    jac_fn = jax.jacobian(eval_res)
     res_norm_0 = jnp.linalg.norm(eval_res(X_init))
     init_state = (X_init, jnp.int32(0), res_norm_0 < tol_val, res_norm_0)
 
@@ -408,14 +413,8 @@ def solve_periodic_orbit(
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         X, it, _, res_norm = state
         res = eval_res(X)
-        J = jac_fn(X)
-
-        dX_solve = -jnp.linalg.solve(J, res)
-        dX = jax.lax.cond(
-            jnp.all(jnp.isfinite(dX_solve)),
-            lambda: dX_solve,
-            lambda: -jnp.linalg.lstsq(J, res, rcond=1e-12)[0],
-        )
+        fac = factor_condensed_collocation(problem, X, p_arr, mesh_arr, dot_u_ref)
+        dX = solve_condensed_collocation(fac, -res)
 
         def _step_score(x_cand: jax.Array) -> jax.Array:
             rn = jnp.linalg.norm(eval_res(x_cand))
@@ -593,10 +592,10 @@ def continue_periodic_orbit(
     ) -> tuple[
         Callable[..., jax.Array],
         Callable[..., jax.Array],
-        Callable[..., jax.Array],
+        Callable[[jax.Array], BorderedOperatorSolver],
         jax.Array | None,
         jax.Array,
-        Callable[[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array], Any] | None,
+        Callable[[jax.Array, jax.Array, jax.Array, Any, Any], Any] | None,
     ]:
         h_seg = mesh_seg[1:] - mesh_seg[:-1]
 
@@ -608,8 +607,9 @@ def continue_periodic_orbit(
         def res_fn(X: jax.Array, p_val: jax.Array, dot_u_ref: jax.Array) -> jax.Array:
             return problem.residual(X, p_val, mesh_seg, dot_u_ref=dot_u_ref)
 
-        jac_u_fn = jax.jacfwd(res_fn, argnums=0)
-        jac_p_fn = jax.jacfwd(res_fn, argnums=1)
+        def solver_factory(dot_u_ref: jax.Array) -> BorderedOperatorSolver:
+            return make_collocation_bordered_solver(problem, mesh_seg, dot_u_ref)
+
         w_arc_seg = (
             periodic_orbit_arclength_weights(problem, mesh_seg, period_weight=t_w, param_weight=p_w)
             if param_mode == "arclength"
@@ -618,13 +618,12 @@ def continue_periodic_orbit(
 
         chart0_seg = chart_fn(X_ref0, p_ref0)
         tau_seg = compute_tangent(
-            jac_u_fn=lambda x_v, p_v: jac_u_fn(x_v, p_v, chart0_seg),
-            jac_p_fn=lambda x_v, p_v: jac_p_fn(x_v, p_v, chart0_seg),
             u0=X_ref0,
             p0=p_ref0,
             direction=direction,
             arclength_weights=w_arc_seg,
             param_mode=param_mode,
+            bordered_solver=solver_factory(chart0_seg),
         )
         if prev_tau_and_mesh is not None:
             old_tau, old_mesh = prev_tau_and_mesh
@@ -666,15 +665,15 @@ def continue_periodic_orbit(
             X_c: jax.Array,
             p_c: jax.Array,
             tau_c: jax.Array,
-            _ju_c: jax.Array,
-            _jp_c: jax.Array,
+            _ju_c: Any,
+            _jp_c: Any,
         ) -> tuple[jax.Array, dict[str, jax.Array], jax.Array]:
             _, u_g_c, T_c = problem.unpack_vars(X_c)
             M_c = monodromy_condensation_raw(problem, mesh_seg, u_g_c, T_c, p=p_c)
             return evaluate_floquet_diagnostics(M_c, tangent_p=tau_c[-1])
 
         obs_fn = _floquet_obs if compute_floquet else None
-        return chart_fn, res_fn, jac_u_fn, w_arc_seg, tau_seg, obs_fn
+        return chart_fn, res_fn, solver_factory, w_arc_seg, tau_seg, obs_fn
 
     def accept_fn(X: jax.Array, _p: jax.Array) -> jax.Array:
         u_m, _, T_val = problem.unpack_vars(X)
@@ -698,10 +697,9 @@ def continue_periodic_orbit(
 
     while remaining > 0:
         seg_steps = min(chunk_size, remaining)
-        chart_fn, res_fn, jac_u_fn, w_arc_seg, tau_seg, obs_fn = _build_segment_problem(
+        chart_fn, res_fn, solver_factory, w_arc_seg, tau_seg, obs_fn = _build_segment_problem(
             cur_mesh, cur_X, cur_p, prev_tm
         )
-        jac_p_fn = jax.jacfwd(res_fn, argnums=1)
         if compute_floquet and not tf_history:
             tf_history.append(
                 {
@@ -713,8 +711,6 @@ def continue_periodic_orbit(
 
         scan_res = track_arclength_scan(
             residual_fn=res_fn,
-            jac_u_fn=jac_u_fn,
-            jac_p_fn=jac_p_fn,
             u0=cur_X,
             p0=cur_p,
             tau0=tau_seg,
@@ -739,6 +735,7 @@ def continue_periodic_orbit(
             tracker_params=cont_opts.tracker,
             norm_options=cont_opts.norm,
             step_observer_fn=obs_fn,
+            bordered_solver=solver_factory,
         )
 
         kept_indices = jnp.nonzero(scan_res.converged)[0].tolist()

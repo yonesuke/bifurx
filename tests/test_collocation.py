@@ -6,15 +6,20 @@ import pytest
 
 from bifurx.bvp import (
     CollocationProblem,
+    CondensedCollocationFactor,
     compute_floquet_multipliers,
     continue_periodic_orbit,
     evaluate_floquet_diagnostics,
+    factor_condensed_collocation,
     initialize_from_hopf,
+    make_collocation_bordered_solver,
     periodic_orbit_arclength_weights,
     redistribute_mesh,
+    solve_condensed_bordered,
+    solve_condensed_collocation,
     solve_periodic_orbit,
 )
-from bifurx.homotopy import compute_tangent
+from bifurx.homotopy import compute_tangent, solve_bordered_system
 from bifurx.options import CollocationOptions
 
 
@@ -646,3 +651,108 @@ def test_initialize_from_hopf_auto_direction():
         direction="auto",
     )
     assert float(p_ab) < p1_hopf
+
+
+def test_condensed_collocation_matches_dense_exact():
+    """Verify de Boor-Swartz block condensation matches dense Newton and bordered solves exactly."""
+    rng = jax.random.PRNGKey(42)
+    mu = jnp.array(1.0, dtype=jnp.float64)
+
+    for N, nonuniform in ((12, True), (1, False)):
+        prob = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=4)
+        mesh = (
+            jnp.linspace(0.0, 1.0, N + 1, dtype=jnp.float64) ** 1.3
+            if nonuniform
+            else jnp.linspace(0.0, 1.0, N + 1, dtype=jnp.float64)
+        )
+        t_m = 2.0 * jnp.pi * mesh[:-1]
+        h = mesh[1:] - mesh[:-1]
+        t_g = 2.0 * jnp.pi * (mesh[:-1, None] + h[:, None] * prob.rho[None, :])
+        u_m = jnp.stack([2.0 * jnp.cos(t_m), -2.0 * jnp.sin(t_m)], axis=-1)
+        u_g = jnp.stack([2.0 * jnp.cos(t_g), -2.0 * jnp.sin(t_g)], axis=-1)
+        X = prob.pack_vars(u_m, u_g, 6.66)
+
+        U_ref = jnp.concatenate([u_m[:, None, :], u_g], axis=1)
+        dot_u_ref = jnp.einsum("mj,Njd->Nmd", prob.D, U_ref) / h[:, None, None]
+
+        k1, k2, k3, k4 = jax.random.split(rng, 4)
+        rhs_X = jax.random.normal(k1, shape=X.shape, dtype=jnp.float64)
+        c_X = jax.random.normal(k2, shape=X.shape, dtype=jnp.float64)
+        d_p = jax.random.normal(k3, shape=(), dtype=jnp.float64)
+        rhs_g = jax.random.normal(k4, shape=(), dtype=jnp.float64)
+
+        def _res(
+            x_v: jnp.ndarray,
+            p_v: jnp.ndarray,
+            p_obj: CollocationProblem = prob,
+            m_arr: jnp.ndarray = mesh,
+            d_ref: jnp.ndarray = dot_u_ref,
+        ) -> jnp.ndarray:
+            return p_obj.residual(x_v, p_v, m_arr, dot_u_ref=d_ref)
+
+        J_dense = jax.jacfwd(_res, argnums=0)(X, mu)
+        Jp_dense = jax.jacfwd(_res, argnums=1)(X, mu)
+
+        # 1. Square solve equivalence
+        dX_dense = jnp.linalg.solve(J_dense, rhs_X)
+        fac_sq = factor_condensed_collocation(prob, X, mu, mesh, dot_u_ref)
+        assert isinstance(fac_sq, CondensedCollocationFactor)
+        dX_cond = solve_condensed_collocation(fac_sq, rhs_X)
+        assert jnp.allclose(dX_cond, dX_dense, atol=1e-11)
+
+        # 2. Bordered solve equivalence (direct + BorderedOperatorSolver wrapper)
+        sol_dense = solve_bordered_system(
+            J_dense, Jp_dense, c_X, d_p, rhs_X, rhs_g, method="direct"
+        )
+        fac_bd = factor_condensed_collocation(prob, X, mu, mesh, dot_u_ref, c_X=c_X, d_p=d_p)
+        sol_cond = solve_condensed_bordered(fac_bd, rhs_X, rhs_g)
+        assert jnp.allclose(sol_cond.z, sol_dense.z, atol=1e-11)
+
+        solver = make_collocation_bordered_solver(prob, mesh, dot_u_ref)
+        sol_op = solver.solve(solver.factor(X, mu, c_X, d_p), rhs_X, rhs_g)
+        assert jnp.allclose(sol_op.z, sol_dense.z, atol=1e-11)
+
+
+def test_condensed_collocation_high_dim_periodic_orbit():
+    """Verify condensed collocation solves and continues a 601-unknown 4D periodic orbit."""
+
+    def f_coupled_sl(u: jnp.ndarray, p: float) -> jnp.ndarray:
+        x1, y1, x2, y2 = u[0], u[1], u[2], u[3]
+        r1 = x1 * x1 + y1 * y1
+        r2 = x2 * x2 + y2 * y2
+        mu1 = 1.0 + p
+        mu2 = 1.0 + 0.5 * p
+        return jnp.array(
+            [
+                mu1 * x1 - y1 - x1 * r1 + 0.05 * (x2 - x1),
+                x1 + mu1 * y1 - y1 * r1 + 0.05 * (y2 - y1),
+                mu2 * x2 - y2 - x2 * r2 + 0.05 * (x1 - x2),
+                x2 + mu2 * y2 - y2 * r2 + 0.05 * (y1 - y2),
+            ]
+        )
+
+    N, m = 30, 4  # n = 4 -> 30 * 5 * 4 + 1 = 601 variables
+    prob = CollocationProblem(f_coupled_sl, dim=4, num_intervals=N, num_gauss_points=m)
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([jnp.cos(t_grid), jnp.sin(t_grid), jnp.cos(t_grid), jnp.sin(t_grid)], axis=1)
+    sol0 = solve_periodic_orbit(prob, u_init, T_init=2.0 * jnp.pi, p=0.0, tol=1e-9)
+    assert bool(sol0.converged)
+    assert abs(float(sol0.period) - 2.0 * float(jnp.pi)) < 1e-4
+
+    branch = continue_periodic_orbit(
+        prob,
+        initial_orbit=sol0,
+        p_start=0.0,
+        p_end=0.5,
+        dp=0.1,
+        dp_max=0.2,
+        max_steps=6,
+        param_mode="arclength",
+        predictor="pade21",
+        compute_floquet=True,
+    )
+    assert len(branch) >= 4
+    assert all(bool(s.converged) for s in branch)
+    assert float(branch[-1].p) > 0.2  # type: ignore[arg-type]
+    assert branch[-1].floquet_multipliers is not None
+    assert bool(branch[-1].is_stable)
