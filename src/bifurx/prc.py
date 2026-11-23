@@ -10,8 +10,10 @@ from jax.typing import ArrayLike
 from bifurx.bvp.collocation import (
     CollocationProblem,
     PeriodicOrbitResult,
+    continue_periodic_orbit,
     solve_periodic_orbit,
 )
+from bifurx.options import CollocationOptions, ContinuationOptions
 
 
 class IPRCResult(NamedTuple):
@@ -188,74 +190,111 @@ def continuation_iprc(
     num_steps: int = 30,
     tol: float = 1e-8,
     max_iters: int = 20,
+    *,
+    param_mode: str = "natural",
+    dp: float | jax.Array | None = None,
+    dp_min: float | None = None,
+    dp_max: float | None = None,
+    max_steps: int | None = None,
+    param_weight: float | None = None,
+    period_weight: float | None = None,
+    predictor: str | None = None,
+    adaptive_step: bool | None = None,
+    non_trivial: bool = True,
+    options: ContinuationOptions | CollocationOptions | None = None,
 ) -> IPRCContinuationResult:
-    """Perform parameter continuation of the infinitesimal Phase Response Curve (iPRC) via `jax.lax.scan`."""
-    N = problem.num_intervals
-    p_values = jnp.linspace(
-        jnp.squeeze(jnp.asarray(p_start, dtype=jnp.float64)),
-        jnp.squeeze(jnp.asarray(p_end, dtype=jnp.float64)),
-        num_steps,
+    """Continue periodic orbits and evaluate iPRC Z(t) in parallel via `jax.vmap`."""
+    N, n = problem.num_intervals, problem.dim
+    init_orbit = solve_periodic_orbit(
+        problem=problem,
+        u_mesh_init=u_mesh_init,
+        T_init=T_init,
+        p=p_start,
+        tol=tol,
+        max_iters=max_iters,
+        non_trivial=non_trivial,
     )
-    mesh = jnp.linspace(0.0, 1.0, N + 1, dtype=jnp.float64)
-
-    u_mesh0 = jnp.asarray(u_mesh_init, dtype=jnp.float64)
-    u_k1 = jnp.roll(u_mesh0, -1, axis=0)
-    rho = problem.rho
-    u_gauss0 = (1.0 - rho[None, :, None]) * u_mesh0[:, None, :] + rho[None, :, None] * u_k1[
-        :, None, :
-    ]
-    T0 = jnp.squeeze(jnp.asarray(T_init, dtype=jnp.float64))
-
-    init_carry = (u_mesh0, u_gauss0, T0, jnp.bool_(True))
-
-    def scan_step(carry, p_val):
-        u_m, u_g, cur_T, is_active = carry
-        sol_orbit = solve_periodic_orbit(
-            problem=problem,
-            u_mesh_init=u_m,
-            T_init=cur_T,
-            p=p_val,
-            mesh=mesh,
-            u_gauss_init=u_g,
-            tol=tol,
-            max_iters=max_iters,
+    if not bool(init_orbit.converged):
+        return IPRCContinuationResult(
+            p=jnp.zeros((0,), dtype=jnp.float64),
+            periods=jnp.zeros((0,), dtype=jnp.float64),
+            peak_amplitudes=jnp.zeros((0, n), dtype=jnp.float64),
+            orbits=jnp.zeros((0, N, n), dtype=jnp.float64),
+            Z=jnp.zeros((0, N, n), dtype=jnp.float64),
+            results=[],
         )
-        step_ok = is_active & sol_orbit.converged
-        u_m_next = jnp.where(step_ok, sol_orbit.u_mesh, u_m)
-        u_g_next = jnp.where(step_ok, sol_orbit.u_gauss, u_g)
-        T_next = jnp.where(step_ok, sol_orbit.period, cur_T)
 
-        omega_val = 2.0 * jnp.pi / T_next
-        Z_step = _solve_adjoint_collocation_jax(
-            problem, mesh, u_m_next, u_g_next, T_next, p_val, omega_val
+    legacy_grid = (
+        param_mode == "natural"
+        and dp is None
+        and max_steps is None
+        and adaptive_step is None
+        and options is None
+    )
+    if legacy_grid:
+        steps_eff = max(int(num_steps) - 1, 0)
+        dp_val = abs(float(p_end) - float(p_start)) / max(steps_eff, 1)
+        dp_eff: float | jax.Array | None = dp_val
+        dp_min_eff = min(dp_val, 1e-5) if (dp_min is None and dp_val > 0.0) else dp_min
+        dp_max_eff = max(dp_val, 0.1) if dp_max is None else dp_max
+        adapt_eff: bool | None = False
+    else:
+        steps_eff = int(num_steps) if max_steps is None else int(max_steps)
+        dp_eff = dp
+        dp_min_eff = dp_min
+        dp_max_eff = dp_max
+        adapt_eff = adaptive_step
+
+    orbits = continue_periodic_orbit(
+        problem=problem,
+        initial_orbit=init_orbit,
+        p_start=p_start,
+        p_end=p_end,
+        dp=dp_eff,
+        dp_min=dp_min_eff,
+        dp_max=dp_max_eff,
+        max_steps=steps_eff,
+        param_mode=param_mode,
+        param_weight=param_weight,
+        period_weight=period_weight,
+        non_trivial=non_trivial,
+        tol=tol,
+        max_iters=max_iters,
+        options=options,
+        predictor=predictor,
+        adaptive_step=adapt_eff,
+    )
+
+    mesh = jnp.asarray(init_orbit.mesh, dtype=jnp.float64)
+    p_all = jnp.stack(
+        [
+            jnp.squeeze(jnp.asarray(p_start if orb.p is None else orb.p, dtype=jnp.float64))
+            for orb in orbits
+        ]
+    )
+    u_mesh_all = jnp.stack([jnp.asarray(orb.u_mesh, dtype=jnp.float64) for orb in orbits])
+    u_gauss_all = jnp.stack([jnp.asarray(orb.u_gauss, dtype=jnp.float64) for orb in orbits])
+    T_all = jnp.stack([jnp.squeeze(jnp.asarray(orb.period, dtype=jnp.float64)) for orb in orbits])
+    omega_all = 2.0 * jnp.pi / T_all
+
+    Z_all = jax.vmap(
+        lambda um, ug, t_v, p_v, om_v: _solve_adjoint_collocation_jax(
+            problem, mesh, um, ug, t_v, p_v, om_v
         )
-        peak_amp = jnp.max(jnp.abs(Z_step), axis=0)
-
-        carry_next = (u_m_next, u_g_next, T_next, step_ok)
-        out = (p_val, T_next, peak_amp, u_m_next, Z_step, omega_val, step_ok)
-        return carry_next, out
-
-    _, outs = jax.lax.scan(scan_step, init_carry, p_values)
-    p_all, T_all, peak_all, orbit_all, Z_all, omega_all, ok_all = outs
-
-    p_kept = p_all[ok_all]
-    T_kept = T_all[ok_all]
-    peak_kept = peak_all[ok_all]
-    orbit_kept = orbit_all[ok_all]
-    Z_kept = Z_all[ok_all]
-    omega_kept = omega_all[ok_all]
+    )(u_mesh_all, u_gauss_all, T_all, p_all, omega_all)
+    peak_all = jnp.max(jnp.abs(Z_all), axis=1)
 
     theta_grid = mesh[:-1]
     results_list = [
-        _build_iprc_result(theta_grid, orbit_kept[k], Z_kept[k], T_kept[k], omega_kept[k])
-        for k in range(int(p_kept.shape[0]))
+        _build_iprc_result(theta_grid, u_mesh_all[k], Z_all[k], T_all[k], omega_all[k])
+        for k in range(len(orbits))
     ]
 
     return IPRCContinuationResult(
-        p=p_kept,
-        periods=T_kept,
-        peak_amplitudes=peak_kept,
-        orbits=orbit_kept,
-        Z=Z_kept,
+        p=p_all,
+        periods=T_all,
+        peak_amplitudes=peak_all,
+        orbits=u_mesh_all,
+        Z=Z_all,
         results=results_list,
     )

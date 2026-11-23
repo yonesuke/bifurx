@@ -151,3 +151,35 @@ def test_iprc_singular_last_velocity_component():
     assert float(jnp.max(jnp.abs(prc_3d.Z[:, 2]))) < 1e-4
     f0_3d = f_3d(prc_3d.orbit[0], 0.5)
     assert abs(float(jnp.dot(prc_3d.Z[0], f0_3d)) - float(prc_3d.omega)) < 1e-5
+
+
+def test_continuation_iprc_arclength_adaptive():
+    """Verify continuation_iprc supports arclength mode, adaptive Padé predictor, and exact iPRC norm."""
+    mu = 0.2
+    N, m = 20, 4
+    prob = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=m)
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
+    sol = solve_periodic_orbit(prob, u_init, T_init=2.0 * jnp.pi, p=mu, tol=1e-8)
+    assert bool(sol.converged)
+
+    res_arc = continuation_iprc(
+        prob,
+        u_mesh_init=sol.u_mesh,
+        T_init=sol.period,
+        p_start=mu,
+        p_end=0.8,
+        dp=0.08,
+        max_steps=6,
+        tol=1e-7,
+        param_mode="arclength",
+        adaptive_step=True,
+        predictor="pade21",
+    )
+    assert res_arc.num_points >= 4
+    assert bool(jnp.all(jnp.isfinite(res_arc.Z)))
+    assert bool(jnp.all(jnp.diff(res_arc.periods) > 0.0))
+    for k, item in enumerate(res_arc.results):
+        f0 = f_vdp(item.orbit[0], float(res_arc.p[k]))
+        expected_omega = 2.0 * float(jnp.pi) / float(item.period)
+        assert abs(float(jnp.dot(item.Z[0], f0)) - expected_omega) < 1e-4
