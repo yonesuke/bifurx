@@ -192,3 +192,32 @@ def test_codim2_bautin_and_zero_hopf_on_hopf_curve():
     assert len(zhs) == 1
     assert abs(zhs[0].p1) < 1e-4
     assert abs(zhs[0].p2) < 1e-2
+
+
+def test_codim2_zero_hopf_on_fold_curve():
+    """Verify 3D ZH (Zero-Hopf) detection along an LP (Fold) curve."""
+
+    def f_fold_zh(u: jnp.ndarray, p1: float, p2: float) -> jnp.ndarray:
+        x, y, z = u[0], u[1], u[2]
+        r2 = x * x + y * y
+        return jnp.array([p2 * x - y - x * r2, x + p2 * y - y * r2, p1 - z * z])
+
+    res_lp_zh = continuation_codim2(
+        f_fold_zh,
+        bif_type="LP",
+        u_init=[0.0, 0.0, 0.0],
+        p1_init=0.0,
+        p2_init=-0.45,
+        ds=0.06,
+        ds_max=0.08,
+        direction=1.0,
+        param_orient_index=1,
+        p2_bounds=(-0.6, 0.5),
+        max_steps=30,
+    )
+    zhs = res_lp_zh.get_singularities("ZH")
+    assert len(zhs) == 1
+    assert abs(zhs[0].p1) < 1e-4
+    assert abs(zhs[0].p2) < 1e-2
+    assert res_lp_zh.test_funcs is not None
+    assert "ZH" in res_lp_zh.test_funcs
