@@ -204,3 +204,65 @@ def test_initialize_from_hopf_detuning():
         prob, u_hopf, p_hopf, eps=0.05, direction=-1.0, ds=None
     )
     assert abs(float(p_init_eps) - (p_hopf - 0.05)) < 1e-12
+
+
+def test_continue_periodic_orbit_arclength_and_param_weight():
+    """Verify weighted arclength and Padé (2,1) continuation of periodic orbits (#15)."""
+    from bifurx.bvp import continue_periodic_orbit
+
+    # 1. Mesh-size invariant dp/ds & continuation on Van der Pol (also with pade21)
+    p_ends: list[float] = []
+    for n_int in (15, 30):
+        prob = CollocationProblem(f_vdp, dim=2, num_intervals=n_int, num_gauss_points=3)
+        t_grid = jnp.linspace(0, 2 * jnp.pi, n_int, endpoint=False)
+        u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
+        sol0 = solve_periodic_orbit(prob, u_init, T_init=2 * jnp.pi, p=0.2, tol=1e-7)
+        assert bool(sol0.converged)
+
+        branch = continue_periodic_orbit(
+            prob,
+            initial_orbit=sol0,
+            p_start=0.2,
+            p_end=0.35,
+            dp=0.05,
+            dp_max=0.08,
+            param_mode="arclength",
+            param_weight=1.0,
+            predictor="pade21",
+            tol=1e-7,
+            max_steps=8,
+        )
+        assert len(branch) >= 3
+        assert all(bool(s.converged) for s in branch)
+        assert all(float(s.residual_norm) < 1e-6 for s in branch[1:])
+        p_ends.append(float(branch[-1].p))  # type: ignore[arg-type]
+
+    # Mesh refinement N=15 -> N=30 produces consistent parameter advancement (not crushed by state dim)
+    assert all(p_val >= 0.34 for p_val in p_ends)
+
+    # 2. A-B reaction limit cycle branch from Hopf (descending p1, growing period)
+    u_hopf = jnp.array([0.8950809, 4.1770443])
+    p1_hopf = 0.1309003
+    prob_ab = CollocationProblem(f_ab, dim=2, num_intervals=20, num_gauss_points=3)
+    mesh, u_m0, u_g0, T0, p0 = initialize_from_hopf(prob_ab, u_hopf, p1_hopf, eps=0.1, p_init=0.130)
+    sol_ab0 = solve_periodic_orbit(
+        prob_ab, u_mesh_init=u_m0, T_init=T0, p=p0, mesh=mesh, u_gauss_init=u_g0, tol=1e-7
+    )
+    assert bool(sol_ab0.converged)
+
+    branch_ab = continue_periodic_orbit(
+        prob_ab,
+        initial_orbit=sol_ab0,
+        p_start=0.130,
+        p_end=0.115,
+        dp=0.006,
+        dp_max=0.015,
+        param_mode="arclength",
+        param_weight=1.0,
+        tol=1e-7,
+        max_steps=12,
+    )
+    assert len(branch_ab) >= 3
+    assert all(bool(s.converged) for s in branch_ab)
+    assert float(branch_ab[-1].p) < float(branch_ab[0].p)  # type: ignore[arg-type]
+    assert float(branch_ab[-1].period) > float(branch_ab[0].period)

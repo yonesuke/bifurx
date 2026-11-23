@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from jax.typing import ArrayLike
 
 from bifurx.bifurcations import extract_leading_hopf_pair
+from bifurx.homotopy import compute_tangent, track_arclength_scan
 from bifurx.options import CollocationOptions, ContinuationOptions
 
 
@@ -199,15 +200,11 @@ class CollocationProblem:
         mesh: jax.Array,
         u_ref_mesh: jax.Array | None = None,
         u_ref_gauss: jax.Array | None = None,
+        dot_u_ref: jax.Array | None = None,
     ) -> jax.Array:
         """Evaluate collocation BVP residual vector of dimension N*(m+1)*dim + 1."""
         u_mesh, u_gauss, T = self.unpack_vars(X)
         h = mesh[1:] - mesh[:-1]
-
-        if u_ref_mesh is None:
-            u_ref_mesh = u_mesh
-        if u_ref_gauss is None:
-            u_ref_gauss = u_gauss
 
         p_val = jnp.squeeze(p) if jnp.ndim(p) > 0 else p
         U = jnp.concatenate([u_mesh[:, None, :], u_gauss], axis=1)
@@ -220,9 +217,14 @@ class CollocationProblem:
         u_end_approx = jnp.einsum("j,Njd->Nd", self.C, U)
         res_cont = (u_next - u_end_approx).ravel()
 
-        U_ref = jnp.concatenate([u_ref_mesh[:, None, :], u_ref_gauss], axis=1)
-        dot_u_ref = jnp.einsum("mj,Njd->Nmd", self.D, U_ref) / h[:, None, None]
-        inner_prod = jnp.sum(dot_u_ref * u_gauss, axis=-1)
+        if dot_u_ref is None:
+            ref_mesh = u_mesh if u_ref_mesh is None else u_ref_mesh
+            ref_gauss = u_gauss if u_ref_gauss is None else u_ref_gauss
+            U_ref = jnp.concatenate([ref_mesh[:, None, :], ref_gauss], axis=1)
+            dot_u_ref_val = jnp.einsum("mj,Njd->Nmd", self.D, U_ref) / h[:, None, None]
+        else:
+            dot_u_ref_val = dot_u_ref
+        inner_prod = jnp.sum(dot_u_ref_val * u_gauss, axis=-1)
         phase_val = jnp.sum(h[:, None] * self.weights[None, :] * inner_prod)
 
         return jnp.concatenate([res_coll, res_cont, jnp.atleast_1d(phase_val)])
@@ -434,8 +436,14 @@ def continue_periodic_orbit(
     verbose: bool = False,
     options: ContinuationOptions | CollocationOptions | None = None,
     collocation_options: CollocationOptions | None = None,
+    predictor: str | None = None,
+    adaptive_step: bool | None = None,
 ) -> list[PeriodicOrbitResult]:
-    """Continue a family of periodic orbits along parameter p (#15)."""
+    """Continue a family of periodic orbits along parameter p via `bifurx.homotopy` (#15)."""
+    if param_mode not in ("natural", "arclength"):
+        msg = f"Unknown param_mode: {param_mode}. Choose from 'natural' or 'arclength'."
+        raise ValueError(msg)
+
     cont_opts = options if isinstance(options, ContinuationOptions) else ContinuationOptions()
     coll_opts = (
         options
@@ -454,6 +462,7 @@ def continue_periodic_orbit(
         if tol is not None
         else (coll_opts.tol if has_coll else (cont_opts.newton.tol if has_cont else 1e-7))
     )
+    rel_tol_val = float(cont_opts.newton.rel_tol if has_cont else min(tol_val, 1e-10))
     max_iters_val = int(
         max_iters
         if max_iters is not None
@@ -463,6 +472,13 @@ def continue_periodic_orbit(
             else (cont_opts.newton.max_iters if has_cont else coll_opts.max_iters)
         )
     )
+    min_amp_val = float(coll_opts.min_amplitude)
+    pred_val = cont_opts.predictor if predictor is None else predictor
+    adapt_val = (
+        cont_opts.adaptive_step
+        if (has_cont and adaptive_step is None)
+        else (True if adaptive_step is None else adaptive_step)
+    )
 
     p_s, p_e = float(p_start), float(p_end)
     direction = 1.0 if p_e >= p_s else -1.0
@@ -470,49 +486,108 @@ def continue_periodic_orbit(
     if initial_orbit.p is None:
         initial_orbit = initial_orbit._replace(p=jnp.asarray(p_s, dtype=jnp.float64))
 
-    results: list[PeriodicOrbitResult] = [initial_orbit]
-    current_orbit = initial_orbit
-    p_cur = p_s
+    if max_steps_val <= 0 or abs(p_e - p_s) <= 1e-12:
+        return [initial_orbit]
 
-    step = 0
-    while step < max_steps_val and (direction * (p_e - p_cur) > 1e-9):
-        p_target = p_cur + direction * cur_dp
-        if (direction > 0 and p_target > p_e) or (direction < 0 and p_target < p_e):
-            p_target = p_e
+    mesh_arr = jnp.asarray(initial_orbit.mesh, dtype=jnp.float64)
+    h_arr = mesh_arr[1:] - mesh_arr[:-1]
+    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
+    n_state = N * (m + 1) * n
+    X0 = problem.pack_vars(initial_orbit.u_mesh, initial_orbit.u_gauss, initial_orbit.period)
+    p0_arr = jnp.asarray(p_s, dtype=jnp.float64)
 
-        sol = solve_periodic_orbit(
-            problem,
-            u_mesh_init=current_orbit.u_mesh,
-            T_init=current_orbit.period,
-            p=p_target,
-            mesh=current_orbit.mesh,
-            u_gauss_init=current_orbit.u_gauss,
-            u_ref_mesh=current_orbit.u_mesh,
-            u_ref_gauss=current_orbit.u_gauss,
-            tol=tol_val,
-            max_iters=max_iters_val,
-            non_trivial=non_trivial,
+    def chart_fn(X_ref: jax.Array, _p: jax.Array) -> jax.Array:
+        u_ref_m, u_ref_g, _ = problem.unpack_vars(X_ref)
+        U_ref = jnp.concatenate([u_ref_m[:, None, :], u_ref_g], axis=1)
+        return jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_arr[:, None, None]
+
+    def res_fn(X: jax.Array, p_val: jax.Array, dot_u_ref: jax.Array) -> jax.Array:
+        return problem.residual(X, p_val, mesh_arr, dot_u_ref=dot_u_ref)
+
+    jac_u_fn = jax.jacfwd(res_fn, argnums=0)
+    jac_p_fn = jax.jacfwd(res_fn, argnums=1)
+
+    def accept_fn(X: jax.Array, _p: jax.Array) -> jax.Array:
+        u_m, _, T_val = problem.unpack_vars(X)
+        ok = jnp.isfinite(T_val) & (T_val > 0.0)
+        if non_trivial:
+            ok = ok & (_orbit_amplitude(u_m) >= min_amp_val)
+        return ok
+
+    if param_mode == "arclength":
+        p_w = 1.0 if param_weight is None else float(param_weight)
+        T0_val = float(initial_orbit.period)
+        w_arc = jnp.concatenate(
+            [
+                jnp.full(n_state, 1.0 / (N * (m + 1)), dtype=jnp.float64),
+                jnp.array([1.0 / (1.0 + T0_val**2), p_w**2], dtype=jnp.float64),
+            ]
         )
+        p_target_arg: float | None = None
+    else:
+        w_arc = None
+        p_target_arg = p_e
 
-        if bool(sol.converged):
-            p_cur = p_target
-            current_orbit = sol
-            results.append(sol)
-            if verbose:
-                print(
-                    f"Step {step + 1}: p={p_cur:.5f}, T={float(sol.T):.5f}, "
-                    f"amp={float(sol.amplitude):.5f}, iters={int(sol.iterations)}"
-                )
-            if int(sol.iterations) <= 4:
-                cur_dp = min(cur_dp * 1.25, dp_max_val)
-            step += 1
-        else:
-            cur_dp *= 0.5
-            if cur_dp < dp_min_val:
-                if verbose:
-                    print(
-                        f"Step {step + 1}: step size {cur_dp} < dp_min ({dp_min_val}). Terminating."
-                    )
-                break
+    chart0 = chart_fn(X0, p0_arr)
+    tau0 = compute_tangent(
+        jac_u_fn=lambda x_v, p_v: jac_u_fn(x_v, p_v, chart0),
+        jac_p_fn=lambda x_v, p_v: jac_p_fn(x_v, p_v, chart0),
+        u0=X0,
+        p0=p0_arr,
+        direction=direction,
+        arclength_weights=w_arc,
+        param_mode=param_mode,
+    )
+
+    scan_res = track_arclength_scan(
+        residual_fn=res_fn,
+        jac_u_fn=jac_u_fn,
+        jac_p_fn=jac_p_fn,
+        u0=X0,
+        p0=p0_arr,
+        tau0=tau0,
+        ds=cur_dp,
+        ds_min=dp_min_val,
+        ds_max=dp_max_val,
+        n_steps=max_steps_val,
+        p_min=min(p_s, p_e),
+        p_max=max(p_s, p_e),
+        adaptive_step=adapt_val,
+        predictor=pred_val,
+        param_mode=param_mode,
+        p_target=p_target_arg,
+        arclength_weights=w_arc,
+        chart_fn=chart_fn,
+        accept_fn=accept_fn,
+        tol=tol_val,
+        step_tol=tol_val,
+        rel_tol=rel_tol_val,
+        max_newton_iters=max_iters_val,
+        solver_method=cont_opts.newton.solver_method,
+        tracker_params=cont_opts.tracker,
+        norm_options=cont_opts.norm,
+    )
+
+    results: list[PeriodicOrbitResult] = [initial_orbit]
+    kept_indices = jnp.nonzero(scan_res.converged)[0].tolist()
+    for step_num, idx in enumerate(kept_indices, start=1):
+        u_m_sol, u_g_sol, T_sol = problem.unpack_vars(scan_res.u[idx])
+        sol = PeriodicOrbitResult(
+            mesh=mesh_arr,
+            u_mesh=u_m_sol,
+            u_gauss=u_g_sol,
+            period=T_sol,
+            converged=scan_res.converged[idx],
+            iterations=scan_res.iterations[idx],
+            residual_norm=scan_res.residual_norms[idx],
+            problem=problem,
+            p=scan_res.p[idx],
+        )
+        results.append(sol)
+        if verbose:
+            print(
+                f"Step {step_num}: p={float(scan_res.p[idx]):.5f}, T={float(sol.T):.5f}, "
+                f"amp={float(sol.amplitude):.5f}, iters={int(sol.iterations)}"
+            )
 
     return results
