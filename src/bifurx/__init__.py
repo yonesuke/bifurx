@@ -25,6 +25,7 @@ from bifurx.bifurcations import (
 from bifurx.bvp.collocation import (
     CollocationProblem,
     PeriodicOrbitResult,
+    branch_from_hopf,
     collocation_matrices,
     continue_periodic_orbit,
     initialize_from_hopf,
@@ -89,6 +90,7 @@ __all__ = [
     "TrackerParameters",
     "WeightedNormOptions",
     "bordered_newton_solve",
+    "branch_from_hopf",
     "collocation_matrices",
     "compute_first_lyapunov_coefficient",
     "compute_floquet_multipliers",

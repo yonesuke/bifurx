@@ -3,6 +3,7 @@
 from bifurx.bvp.collocation import (
     CollocationProblem,
     PeriodicOrbitResult,
+    branch_from_hopf,
     collocation_matrices,
     continue_periodic_orbit,
     initialize_from_hopf,
@@ -31,6 +32,7 @@ __all__ = [
     "CollocationProblem",
     "CondensedCollocationFactor",
     "PeriodicOrbitResult",
+    "branch_from_hopf",
     "collocation_matrices",
     "compute_floquet_exponents",
     "compute_floquet_multipliers",
