@@ -3,7 +3,7 @@
 [![CI](https://github.com/yonesuke/bifurx/actions/workflows/ci.yml/badge.svg)](https://github.com/yonesuke/bifurx/actions/workflows/ci.yml)
 [![Docs](https://github.com/yonesuke/bifurx/actions/workflows/docs.yml/badge.svg)](https://yonesuke.github.io/bifurx/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Numerical continuation and bifurcation analysis in JAX.**  
 *A modern, differentiable reimagining of AUTO-07P.*
