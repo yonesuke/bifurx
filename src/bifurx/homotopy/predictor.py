@@ -44,16 +44,20 @@ def compute_arclength_taylor3(
     tau: jax.Array,
     Ju: jax.Array,
     Jp: jax.Array,
+    border_c: jax.Array | None = None,
+    border_d: float | jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Compute 2nd/3rd arclength Taylor coefficients and Padé trust region.
 
     Taylor series coefficients `z2 = z''(0)/2`, `z3 = z'''(0)/6` satisfy
     `z(s) = z0 + tau * s + z2 * s^2 + z3 * s^3 + O(s^4)` along the curve
-    `residual_fn(u, p) = 0`, `<tau, z(s) - z0> = s`.
+    `residual_fn(u, p) = 0`, `<c, u(s) - u0> + d * (p(s) - p0) = s`.
     """
     n = u.shape[0]
     z0 = jnp.concatenate([u, jnp.atleast_1d(p)])
     z1 = tau
+    c_vec = tau[:n] if border_c is None else border_c
+    d_val = tau[-1] if border_d is None else border_d
 
     def G(z: jax.Array) -> jax.Array:
         return residual_fn(z[:n], jnp.squeeze(z[-1]))
@@ -73,7 +77,7 @@ def compute_arclength_taylor3(
         (jnp.array(1.0, dtype=jnp.float64),),
     )
 
-    fac = factor_bordered_matrix(Ju, Jp, tau[:n], tau[-1])
+    fac = factor_bordered_matrix(Ju, Jp, c_vec, d_val)
     z2 = solve_factored_bordered(fac, -0.5 * d2_11, 0.0).z
 
     d2_12 = jax.jvp(lambda z: jax.jvp(G, (z,), (z1,))[1], (z0,), (z2,))[1]

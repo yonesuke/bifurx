@@ -24,7 +24,7 @@ from bifurx.homotopy.stepsize import TrackerParameters, update_step_size
 
 
 class TrackScanResult(NamedTuple):
-    """Result of pure-JAX pseudo-arclength path tracking via `jax.lax.scan`."""
+    """Result of pure-JAX pseudo-arclength or natural path tracking via `jax.lax.scan`."""
 
     u: jax.Array
     p: jax.Array
@@ -32,9 +32,18 @@ class TrackScanResult(NamedTuple):
     converged: jax.Array
     step_sizes: jax.Array
     iterations: jax.Array
+    residual_norms: jax.Array
     omega: jax.Array
     trust_regions: jax.Array
     observer: Any
+
+
+def _normalize_tangent(tau: jax.Array, w_arc: jax.Array | None = None) -> jax.Array:
+    if w_arc is None:
+        norm_val = jnp.linalg.norm(tau)
+    else:
+        norm_val = jnp.sqrt(jnp.maximum(jnp.dot(w_arc * tau, tau), 0.0))
+    return jnp.where(norm_val > 1e-12, tau / norm_val, tau)
 
 
 def compute_tangent(
@@ -44,29 +53,48 @@ def compute_tangent(
     p0: float | jax.Array,
     direction: float | jax.Array = 1.0,
     initial_tangent: jax.Array | None = None,
+    arclength_weights: jax.Array | None = None,
+    param_mode: str = "arclength",
 ) -> jax.Array:
-    """Compute or normalize the initial unit tangent vector `(du/ds, dp/ds)`."""
+    """Compute or normalize the initial tangent vector `(du/ds, dp/ds)`."""
+    if param_mode not in ("arclength", "natural"):
+        msg = f"Unknown param_mode: {param_mode}. Choose from 'arclength' or 'natural'."
+        raise ValueError(msg)
+
+    w_arc = None if arclength_weights is None else jnp.asarray(arclength_weights, dtype=jnp.float64)
     if initial_tangent is not None:
-        tau = jnp.asarray(initial_tangent, dtype=jnp.float64)
-        norm_val = jnp.linalg.norm(tau)
-        return jnp.where(norm_val > 1e-12, tau / norm_val, tau)
+        tau_in = jnp.asarray(initial_tangent, dtype=jnp.float64)
+        return tau_in if param_mode == "natural" else _normalize_tangent(tau_in, w_arc)
 
     u0_arr = jnp.asarray(u0, dtype=jnp.float64)
     p0_arr = jnp.squeeze(jnp.asarray(p0, dtype=jnp.float64))
     Ju = jac_u_fn(u0_arr, p0_arr)
     Jp = jac_p_fn(u0_arr, p0_arr)
+    n = u0_arr.shape[0]
+
+    if param_mode == "natural":
+        dir_sgn = jnp.where(jnp.asarray(direction, dtype=jnp.float64) < 0.0, -1.0, 1.0)
+        sol = solve_bordered_system(
+            A=Ju,
+            b=Jp,
+            c=jnp.zeros(n, dtype=jnp.float64),
+            d=dir_sgn,
+            f=jnp.zeros(n, dtype=jnp.float64),
+            g=1.0,
+        )
+        return sol.z
+
     J = jnp.hstack([Ju, Jp.reshape(-1, 1)])
     _, _, vh = jnp.linalg.svd(J)
     tau = vh[-1, :]
-    tau = tau * jnp.where(tau[-1] * direction < 0, -1.0, 1.0)
-    norm_val = jnp.linalg.norm(tau)
-    return jnp.where(norm_val > 1e-12, tau / norm_val, tau)
+    tau = tau * jnp.where(tau[-1] * direction < 0.0, -1.0, 1.0)
+    return _normalize_tangent(tau, w_arc)
 
 
 def track_arclength_scan(
-    residual_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    jac_u_fn: Callable[[jax.Array, jax.Array], jax.Array],
-    jac_p_fn: Callable[[jax.Array, jax.Array], jax.Array],
+    residual_fn: Callable[..., jax.Array],
+    jac_u_fn: Callable[..., jax.Array],
+    jac_p_fn: Callable[..., jax.Array],
     u0: ArrayLike,
     p0: float | jax.Array,
     tau0: jax.Array,
@@ -78,6 +106,11 @@ def track_arclength_scan(
     p_max: float | jax.Array = jnp.inf,
     adaptive_step: bool = False,
     predictor: str = "tangent",
+    param_mode: str = "arclength",
+    p_target: float | jax.Array | None = None,
+    arclength_weights: jax.Array | None = None,
+    chart_fn: Callable[[jax.Array, jax.Array], Any] | None = None,
+    accept_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None,
     tol: float = 1e-8,
     step_tol: float = 1e-8,
     rel_tol: float = 1e-8,
@@ -92,6 +125,9 @@ def track_arclength_scan(
     if predictor not in ("tangent", "pade21"):
         msg = f"Unknown predictor: {predictor}. Choose from 'tangent' or 'pade21'."
         raise ValueError(msg)
+    if param_mode not in ("arclength", "natural"):
+        msg = f"Unknown param_mode: {param_mode}. Choose from 'arclength' or 'natural'."
+        raise ValueError(msg)
 
     t_params = TrackerParameters() if tracker_params is None else tracker_params
     n_opts = WeightedNormOptions() if norm_options is None else norm_options
@@ -100,6 +136,16 @@ def track_arclength_scan(
     p_cur = jnp.squeeze(jnp.asarray(p0, dtype=jnp.float64))
     tau_cur = jnp.asarray(tau0, dtype=jnp.float64)
     n = u_cur.shape[0]
+    w_arc = None if arclength_weights is None else jnp.asarray(arclength_weights, dtype=jnp.float64)
+    is_natural = param_mode == "natural"
+    has_target = is_natural and (p_target is not None)
+    p_target_val = (
+        jnp.array(0.0, dtype=jnp.float64)
+        if p_target is None
+        else jnp.squeeze(jnp.asarray(p_target, dtype=jnp.float64))
+    )
+    dir_sgn = jnp.where(tau_cur[-1] < 0.0, -1.0, 1.0)
+    zero_u = jnp.zeros(n, dtype=jnp.float64)
 
     ds_cur = jnp.asarray(ds, dtype=jnp.float64)
     ds_min_val = jnp.asarray(ds_min, dtype=jnp.float64)
@@ -107,18 +153,46 @@ def track_arclength_scan(
     p_min_val = jnp.asarray(p_min, dtype=jnp.float64)
     p_max_val = jnp.asarray(p_max, dtype=jnp.float64)
 
+    def _bind_callables(
+        chart: Any,
+    ) -> tuple[
+        Callable[[jax.Array, jax.Array], jax.Array],
+        Callable[[jax.Array, jax.Array], jax.Array],
+        Callable[[jax.Array, jax.Array], jax.Array],
+    ]:
+        if chart_fn is None:
+            return residual_fn, jac_u_fn, jac_p_fn
+        return (
+            lambda u_v, p_v: residual_fn(u_v, p_v, chart),
+            lambda u_v, p_v: jac_u_fn(u_v, p_v, chart),
+            lambda u_v, p_v: jac_p_fn(u_v, p_v, chart),
+        )
+
+    def _border_for(tau_val: jax.Array) -> tuple[jax.Array | None, jax.Array | None]:
+        if is_natural:
+            return zero_u, dir_sgn
+        if w_arc is not None:
+            return w_arc[:n] * tau_val[:n], w_arc[-1] * tau_val[-1]
+        return None, None
+
+    chart_0 = chart_fn(u_cur, p_cur) if chart_fn is not None else None
     pred_order = 4 if predictor == "pade21" else 2
     w0 = init_weighted_norm(jnp.concatenate([u_cur, jnp.atleast_1d(p_cur)]), n_opts)
 
     if predictor == "pade21":
-        Ju0 = jac_u_fn(u_cur, p_cur)
-        Jp0 = jac_p_fn(u_cur, p_cur)
-        z2_0, z3_0, tr_0 = compute_arclength_taylor3(residual_fn, u_cur, p_cur, tau_cur, Ju0, Jp0)
+        res0_fn, ju0_fn, jp0_fn = _bind_callables(chart_0)
+        Ju0 = ju0_fn(u_cur, p_cur)
+        Jp0 = jp0_fn(u_cur, p_cur)
+        bc0, bd0 = _border_for(tau_cur)
+        z2_0, z3_0, tr_0 = compute_arclength_taylor3(
+            res0_fn, u_cur, p_cur, tau_cur, Ju0, Jp0, border_c=bc0, border_d=bd0
+        )
     else:
         z2_0 = jnp.zeros(n + 1, dtype=jnp.float64)
         z3_0 = jnp.zeros(n + 1, dtype=jnp.float64)
         tr_0 = jnp.array(jnp.inf, dtype=jnp.float64)
 
+    init_active = (dir_sgn * (p_target_val - p_cur) > 1e-12) if has_target else jnp.bool_(True)
     init_carry = (
         u_cur,
         p_cur,
@@ -126,35 +200,53 @@ def track_arclength_scan(
         z2_0,
         z3_0,
         tr_0,
+        chart_0,
         ds_cur,
         w0,
         jnp.array(1.0, dtype=jnp.float64),
         jnp.array(1.0, dtype=jnp.float64),
-        jnp.bool_(True),
+        init_active,
         jnp.bool_(False),
         jnp.bool_(True),
     )
 
     def _compute_next_tau(
+        ju_step: Callable[[jax.Array, jax.Array], jax.Array],
+        jp_step: Callable[[jax.Array, jax.Array], jax.Array],
         u_val: jax.Array,
         p_val: jax.Array,
         tau_prev: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        Ju_cand = jac_u_fn(u_val, p_val)
-        Jp_cand = jac_p_fn(u_val, p_val)
+        Ju_cand = ju_step(u_val, p_val)
+        Jp_cand = jp_step(u_val, p_val)
+        if is_natural:
+            sol_tau = solve_bordered_system(
+                A=Ju_cand,
+                b=Jp_cand,
+                c=zero_u,
+                d=dir_sgn,
+                f=zero_u,
+                g=1.0,
+                method=solver_method,
+            )
+            return sol_tau.z, Ju_cand, Jp_cand
+
+        c_prev = tau_prev[:n] if w_arc is None else w_arc[:n] * tau_prev[:n]
+        d_prev = tau_prev[-1] if w_arc is None else w_arc[-1] * tau_prev[-1]
         sol_tau = solve_bordered_system(
             A=Ju_cand,
             b=Jp_cand,
-            c=tau_prev[:n],
-            d=tau_prev[-1],
-            f=jnp.zeros(n, dtype=jnp.float64),
+            c=c_prev,
+            d=d_prev,
+            f=zero_u,
             g=1.0,
             method=solver_method,
         )
-        tau_cand = sol_tau.z
-        tau_norm = jnp.linalg.norm(tau_cand)
-        tau_cand = jnp.where(tau_norm > 1e-12, tau_cand / tau_norm, tau_prev)
-        tau_cand = jnp.where(jnp.dot(tau_cand, tau_prev) < 0.0, -tau_cand, tau_cand)
+        tau_cand = _normalize_tangent(sol_tau.z, w_arc)
+        align_dot = (
+            jnp.dot(tau_cand, tau_prev) if w_arc is None else jnp.dot(w_arc * tau_cand, tau_prev)
+        )
+        tau_cand = jnp.where(align_dot < 0.0, -tau_cand, tau_cand)
         return tau_cand, Ju_cand, Jp_cand
 
     def step_fn(carry: tuple[Any, ...], _: None) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
@@ -165,6 +257,7 @@ def track_arclength_scan(
             z2,
             z3,
             tr,
+            chart,
             cur_ds,
             weights,
             omega,
@@ -174,25 +267,38 @@ def track_arclength_scan(
             is_first,
         ) = carry
 
-        if predictor == "pade21":
-            u_pred, p_pred = pade21_predict(u, p, tau, z2, z3, tr, cur_ds)
+        if has_target:
+            rem = dir_sgn * (p_target_val - p)
+            at_target = rem <= cur_ds
+            step_ds = jnp.minimum(cur_ds, jnp.maximum(rem, 0.0))
         else:
-            u_pred, p_pred = tangent_predict(u, p, tau, cur_ds)
+            at_target = jnp.bool_(False)
+            step_ds = cur_ds
+
+        if predictor == "pade21":
+            u_pred, p_pred = pade21_predict(u, p, tau, z2, z3, tr, step_ds)
+        else:
+            u_pred, p_pred = tangent_predict(u, p, tau, step_ds)
+
+        if has_target:
+            p_pred = jnp.where(at_target, p_target_val, p_pred)
 
         w_step = update_weighted_norm(
             weights, jnp.concatenate([u_pred, jnp.atleast_1d(p_pred)]), n_opts
         )
+        res_step, ju_step, jp_step = _bind_callables(chart)
+        bc_step, bd_step = _border_for(tau)
 
         res = correct_arclength_step(
-            residual_fn=residual_fn,
-            jac_u_fn=jac_u_fn,
-            jac_p_fn=jac_p_fn,
+            residual_fn=res_step,
+            jac_u_fn=ju_step,
+            jac_p_fn=jp_step,
             u_init=u_pred,
             p_init=p_pred,
             u_prev=u,
             p_prev=p,
             tau_prev=tau,
-            ds=cur_ds,
+            ds=step_ds,
             weights=w_step,
             omega_init=omega,
             first_step=is_first,
@@ -204,15 +310,34 @@ def track_arclength_scan(
             contraction_a=t_params.a,
             enforce_contraction=adaptive_step,
             track_contraction=adaptive_step,
+            border_c=bc_step,
+            border_d=bd_step,
         )
 
-        converged_step = is_active & res.converged
         u_cand, p_cand = res.u, res.p
-        tau_cand, Ju_cand, Jp_cand = _compute_next_tau(u_cand, p_cand, tau)
+        if has_target:
+            p_cand = jnp.where(at_target, p_target_val, p_cand)
+
+        step_ok = (
+            res.converged & accept_fn(u_cand, p_cand) if accept_fn is not None else res.converged
+        )
+        converged_step = is_active & step_ok
+
+        chart_cand = chart_fn(u_cand, p_cand) if chart_fn is not None else chart
+        res_next_fn, ju_next_fn, jp_next_fn = _bind_callables(chart_cand)
+        tau_cand, Ju_cand, Jp_cand = _compute_next_tau(ju_next_fn, jp_next_fn, u_cand, p_cand, tau)
 
         if predictor == "pade21":
+            bc_cand, bd_cand = _border_for(tau_cand)
             z2_cand, z3_cand, tr_cand = compute_arclength_taylor3(
-                residual_fn, u_cand, p_cand, tau_cand, Ju_cand, Jp_cand
+                res_next_fn,
+                u_cand,
+                p_cand,
+                tau_cand,
+                Ju_cand,
+                Jp_cand,
+                border_c=bc_cand,
+                border_d=bd_cand,
             )
         else:
             z2_cand, z3_cand, tr_cand = z2, z3, tr
@@ -229,11 +354,21 @@ def track_arclength_scan(
         z2_next = jnp.where(converged_step, z2_cand, z2)
         z3_next = jnp.where(converged_step, z3_cand, z3)
         tr_next = jnp.where(converged_step, tr_cand, tr)
+        chart_next = (
+            jax.tree_util.tree_map(
+                lambda new_v, old_v: jnp.where(converged_step, new_v, old_v), chart_cand, chart
+            )
+            if chart_fn is not None
+            else None
+        )
         weights_next = jnp.where(converged_step, w_step, weights)
 
         in_bounds = (p_next >= p_min_val) & (p_next <= p_max_val)
+        still_going = in_bounds & (
+            ~(dir_sgn * (p_target_val - p_next) <= 1e-12) if has_target else True
+        )
         is_first_next = jnp.where(converged_step, jnp.bool_(False), is_first)
-        last_failed_next = jnp.where(is_active, ~res.converged, last_failed)
+        last_failed_next = jnp.where(is_active, ~step_ok, last_failed)
 
         if adaptive_step:
             omega_valid = jnp.isfinite(res.omega) & (res.omega > 0.0)
@@ -243,11 +378,11 @@ def track_arclength_scan(
             omega_next = jnp.where(converged_step, omega_cand, omega)
 
             local_err = estimate_local_error(
-                u_pred, p_pred, u_cand, p_cand, cur_ds, pred_order, w_step
+                u_pred, p_pred, u_cand, p_cand, jnp.maximum(step_ds, ds_min_val), pred_order, w_step
             )
             ds_cand = update_step_size(
                 ds=cur_ds,
-                converged=res.converged,
+                converged=step_ok,
                 omega=omega_next,
                 omega_prev=omega_prev_next,
                 local_error=local_err,
@@ -261,13 +396,13 @@ def track_arclength_scan(
                 params=t_params,
             )
             ds_next = jnp.where(is_active, ds_cand, cur_ds)
-            can_retry = res.converged | (cur_ds > ds_min_val * (1.0 + 1e-12))
-            is_active_next = is_active & jnp.where(res.converged, in_bounds, can_retry)
+            can_retry = step_ok | (cur_ds > ds_min_val * (1.0 + 1e-12))
+            is_active_next = is_active & jnp.where(step_ok, still_going, can_retry)
         else:
             omega_prev_next = omega_prev
             omega_next = omega
             ds_next = cur_ds
-            is_active_next = converged_step & in_bounds
+            is_active_next = converged_step & still_going
 
         carry_next = (
             u_next,
@@ -276,6 +411,7 @@ def track_arclength_scan(
             z2_next,
             z3_next,
             tr_next,
+            chart_next,
             ds_next,
             weights_next,
             omega_next,
@@ -289,8 +425,9 @@ def track_arclength_scan(
             p_next,
             tau_next,
             converged_step,
-            cur_ds,
+            step_ds,
             res.iterations,
+            res.residual_norm,
             omega_next,
             tr_next,
             obs_cand,

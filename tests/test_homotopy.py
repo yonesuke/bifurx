@@ -292,3 +292,119 @@ def test_track_arclength_scan_jit_vmap_and_pade_accuracy() -> None:
     assert batch_res.u.shape == (8, 20, 1)
     assert bool(jnp.all(batch_res.converged))
     assert jnp.allclose(batch_res.u[:, :, 0] ** 2, batch_res.p, atol=1e-7)
+
+
+def test_weighted_arclength_high_dim_metric() -> None:
+    """Verify arclength_weights prevents high state dimension from crushing dp/ds (#15)."""
+    dim = 100
+
+    def high_dim_fn(u: jax.Array, p: jax.Array) -> jax.Array:
+        return u**2 - p
+
+    def high_dim_ju(u: jax.Array, _p: jax.Array) -> jax.Array:
+        return jnp.diag(2.0 * u)
+
+    def high_dim_jp(_u: jax.Array, _p: jax.Array) -> jax.Array:
+        return -jnp.ones(dim, dtype=jnp.float64)
+
+    u0 = jnp.ones(dim, dtype=jnp.float64)
+    p0 = jnp.array(1.0, dtype=jnp.float64)
+
+    tau_unweighted = compute_tangent(high_dim_ju, high_dim_jp, u0, p0)
+    # In unweighted Euclidean norm, dp/ds shrinks as O(1/sqrt(dim))
+    assert abs(float(tau_unweighted[-1])) < 0.25
+
+    w_arc = jnp.concatenate([jnp.full(dim, 1.0 / dim), jnp.array([1.0])])
+    tau_weighted = compute_tangent(
+        high_dim_ju, high_dim_jp, u0, p0, arclength_weights=w_arc, param_mode="arclength"
+    )
+    # In mesh/dim-invariant weighted norm, sum((1/dim) * (0.5)^2) + 1 = 1.25 -> dp/ds = 1/sqrt(1.25)
+    assert float(tau_weighted[-1]) == pytest.approx(1.0 / float(jnp.sqrt(1.25)), rel=1e-6)
+
+    res = jax.jit(
+        lambda: track_arclength_scan(
+            high_dim_fn,
+            high_dim_ju,
+            high_dim_jp,
+            u0,
+            p0,
+            tau_weighted,
+            ds=0.1,
+            n_steps=8,
+            adaptive_step=True,
+            arclength_weights=w_arc,
+        )
+    )()
+    assert bool(jnp.all(res.converged))
+    assert float(res.p[-1]) > 1.5
+    assert float(jnp.max(res.residual_norms)) < 1e-8
+    assert jnp.allclose(res.u**2, res.p[:, None], atol=1e-8)
+
+
+def test_natural_mode_exact_target_and_chart_accept_hooks() -> None:
+    """Verify param_mode='natural' hits p_target exactly and supports chart_fn/accept_fn + pade21."""
+
+    def charted_fold_fn(u: jax.Array, p: jax.Array, ref: jax.Array) -> jax.Array:
+        # Auxiliary shift in second coordinate anchored against moving chart reference
+        return jnp.array([u[0] ** 2 - p, u[1] - (ref[1] + 0.01 * (u[0] - ref[0]))])
+
+    ju_fn = jax.jacobian(charted_fold_fn, argnums=0)
+    jp_fn = jax.jacobian(charted_fold_fn, argnums=1)
+
+    u0 = jnp.array([1.0, 0.0])
+    p0 = jnp.array(1.0)
+    tau0 = compute_tangent(
+        lambda u_v, p_v: ju_fn(u_v, p_v, u0),
+        lambda u_v, p_v: jp_fn(u_v, p_v, u0),
+        u0,
+        p0,
+        direction=1.0,
+        param_mode="natural",
+    )
+    assert float(tau0[-1]) == 1.0
+
+    # Reject steps that drop u[0] below threshold via accept_fn (always true here)
+    res_nat = jax.jit(
+        lambda: track_arclength_scan(
+            charted_fold_fn,
+            ju_fn,
+            jp_fn,
+            u0,
+            p0,
+            tau0,
+            ds=0.13,
+            ds_max=0.2,
+            n_steps=10,
+            p_min=0.5,
+            p_max=1.35,
+            adaptive_step=True,
+            predictor="pade21",
+            param_mode="natural",
+            p_target=1.35,
+            chart_fn=lambda u_c, _p_c: u_c,
+            accept_fn=lambda u_c, _p_c: u_c[0] > 0.5,
+        )
+    )()
+    p_kept = res_nat.p[res_nat.converged]
+    assert int(p_kept.shape[0]) >= 3
+    assert float(p_kept[-1]) == 1.35
+    assert jnp.allclose(res_nat.u[res_nat.converged, 0] ** 2, p_kept, atol=1e-8)
+
+    # accept_fn returning False forces rejection and shrinks ds until termination
+    res_rej = track_arclength_scan(
+        charted_fold_fn,
+        ju_fn,
+        jp_fn,
+        u0,
+        p0,
+        tau0,
+        ds=0.1,
+        ds_min=0.05,
+        n_steps=5,
+        adaptive_step=True,
+        param_mode="natural",
+        p_target=1.5,
+        chart_fn=lambda u_c, _p_c: u_c,
+        accept_fn=lambda u_c, _p_c: u_c[0] > 10.0,
+    )
+    assert not bool(jnp.any(res_rej.converged))

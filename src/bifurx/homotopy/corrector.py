@@ -47,12 +47,15 @@ def correct_arclength_step(
     contraction_a: float = 0.125,
     enforce_contraction: bool = False,
     track_contraction: bool = True,
+    border_c: jax.Array | None = None,
+    border_d: float | jax.Array | None = None,
 ) -> CorrectorResult:
     """Solve bordered arclength Newton system with optional contraction-rate early abort.
 
     Solves:
         residual_fn(u, p) = 0
-        <tau_u, u - u_prev> + tau_p * (p - p_prev) - ds = 0
+        <c, u - u_prev> + d * (p - p_prev) - ds = 0
+    where `(c, d)` defaults to `(tau_prev[:n], tau_prev[-1])`.
     """
     n = u_init.shape[0]
     u_0 = jnp.asarray(u_init, dtype=jnp.float64)
@@ -60,8 +63,14 @@ def correct_arclength_step(
     u_p = jnp.asarray(u_prev, dtype=jnp.float64)
     p_p = jnp.squeeze(jnp.asarray(p_prev, dtype=jnp.float64))
     tau_arr = jnp.asarray(tau_prev, dtype=jnp.float64)
-    tau_u = tau_arr[:n]
-    tau_p = jnp.squeeze(tau_arr[-1])
+    c_vec = (
+        tau_arr[:n] if border_c is None else jnp.asarray(border_c, dtype=jnp.float64).reshape((n,))
+    )
+    d_val = (
+        jnp.squeeze(tau_arr[-1])
+        if border_d is None
+        else jnp.squeeze(jnp.asarray(border_d, dtype=jnp.float64))
+    )
     ds_val = jnp.squeeze(jnp.asarray(ds, dtype=jnp.float64))
 
     use_weighted_step = weights is not None
@@ -75,7 +84,7 @@ def correct_arclength_step(
     h_a = kantorovich_h(contraction_a)
 
     f_0 = residual_fn(u_0, p_0)
-    arc_0 = jnp.dot(tau_u, u_0 - u_p) + tau_p * (p_0 - p_p) - ds_val
+    arc_0 = jnp.dot(c_vec, u_0 - u_p) + d_val * (p_0 - p_p) - ds_val
     res_norm_0 = jnp.sqrt(jnp.sum(f_0**2) + arc_0**2)
     res_tol = tol + rel_tol * res_norm_0
     conv_0 = jnp.isfinite(res_norm_0) & (res_norm_0 <= tol)
@@ -114,8 +123,8 @@ def correct_arclength_step(
         sol = solve_bordered_system(
             A=Ju,
             b=Jp,
-            c=tau_u,
-            d=tau_p,
+            c=c_vec,
+            d=d_val,
             f=-f_val,
             g=-arc_res,
             method=solver_method,
@@ -137,7 +146,7 @@ def correct_arclength_step(
         u_cand = u + du
         p_cand = p + dp
         f_next = residual_fn(u_cand, p_cand)
-        arc_next = jnp.dot(tau_u, u_cand - u_p) + tau_p * (p_cand - p_p) - ds_val
+        arc_next = jnp.dot(c_vec, u_cand - u_p) + d_val * (p_cand - p_p) - ds_val
         res_norm_next = jnp.sqrt(jnp.sum(f_next**2) + arc_next**2)
 
         is_valid = (
