@@ -27,7 +27,7 @@ test = [
     "pytest-cov",
 ]
 docs = [
-    "jupyter-book>=2.0",
+    "jupyter-book>=2.1.7",
     "matplotlib",
 ]
 
