@@ -132,6 +132,7 @@ def track_arclength_scan(
     arclength_weights: jax.Array | None = None,
     chart_fn: Callable[[jax.Array, jax.Array], Any] | None = None,
     accept_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None,
+    stop_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None,
     tol: float = 1e-8,
     step_tol: float = 1e-8,
     rel_tol: float = 1e-8,
@@ -432,8 +433,11 @@ def track_arclength_scan(
         weights_next = jnp.where(converged_step, w_step, weights)
 
         in_bounds = (p_next >= p_min_val) & (p_next <= p_max_val)
-        still_going = in_bounds & (
-            ~(dir_sgn * (p_target_val - p_next) <= 1e-12) if has_target else True
+        stopped_by_fn = stop_fn(u_next, p_next) if stop_fn is not None else jnp.bool_(False)
+        still_going = (
+            in_bounds
+            & (~stopped_by_fn)
+            & (~(dir_sgn * (p_target_val - p_next) <= 1e-12) if has_target else True)
         )
         is_first_next = jnp.where(converged_step, jnp.bool_(False), is_first)
         last_failed_next = jnp.where(is_active, ~step_ok, last_failed)

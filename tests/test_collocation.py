@@ -756,3 +756,34 @@ def test_condensed_collocation_high_dim_periodic_orbit():
     assert float(branch[-1].p) > 0.2  # type: ignore[arg-type]
     assert branch[-1].floquet_multipliers is not None
     assert bool(branch[-1].is_stable)
+
+
+def test_continue_periodic_orbit_period_bounds():
+    """Verify period_bounds cleanly terminates periodic orbit continuation upon period blowup."""
+
+    # Van der Pol period increases monotonically with mu (T ~ 6.30 at mu=0.2, ~ 7.63 at mu=2.0)
+    N = 20
+    prob = CollocationProblem(f_vdp, dim=2, num_intervals=N, num_gauss_points=4)
+    t_grid = jnp.linspace(0.0, 2.0 * jnp.pi, N, endpoint=False)
+    u_init = jnp.stack([2.0 * jnp.cos(t_grid), -2.0 * jnp.sin(t_grid)], axis=1)
+    sol0 = solve_periodic_orbit(prob, u_init, T_init=2.0 * jnp.pi, p=0.2, tol=1e-8)
+    assert bool(sol0.converged)
+
+    with pytest.raises(ValueError, match="period_bounds"):
+        continue_periodic_orbit(prob, sol0, p_start=0.2, p_end=2.0, period_bounds=(10.0, 5.0))
+
+    t_max = 6.7
+    branch = continue_periodic_orbit(
+        prob,
+        initial_orbit=sol0,
+        p_start=0.2,
+        p_end=3.0,
+        dp=0.15,
+        dp_max=0.25,
+        max_steps=80,
+        param_mode="arclength",
+        period_bounds=(0.1, t_max),
+    )
+    assert len(branch) < 80, "Continuation should stop early when period_bounds is reached"
+    assert float(branch[-1].period) >= t_max
+    assert float(branch[-2].period) < t_max
