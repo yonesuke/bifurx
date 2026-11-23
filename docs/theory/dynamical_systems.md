@@ -69,10 +69,12 @@ As `track_arclength_scan` traces the LP or HB curve, `continuation_codim2` monit
 
 | Singularity | Curve | Defining Condition | Test Function |
 | :--- | :--- | :--- | :--- |
-| **Cusp (CP)** | LP | Quadratic coefficient vanishes: $\psi^T D^2_{uu} f[v, v] = 0$ | $\psi_{\text{CP}} = \langle w, D^2_{uu} f(u)[v, v] \rangle$ ($w \in \ker J_u^T$) |
-| **Bogdanov-Takens (BT)** | LP / HB | Double zero eigenvalue ($\lambda_{1,2} = 0$, Jordan block) | $\langle w, v \rangle = 0$ (on LP) or $\omega^2 \to 0$ (on HB) |
+| **Cusp (CP)** | LP | Quadratic coefficient vanishes: $\frac{1}{2}\langle w, D^2_{uu} f[v, v]\rangle = 0$ | $\psi_{\text{CP}} = \frac{1}{2}\langle w, D^2_{uu} f(u)[v, v] \rangle$ ($w \in \ker J_u^T$) |
+| **Bogdanov-Takens (BT)** | LP / HB | Double zero eigenvalue ($\lambda_{1,2} = 0$, Jordan block) | $\langle w, v \rangle = 0$ (LP); $\det(J_u) = 0$ ($n=2$) or $\omega = 0$ ($n\ge 3$) (HB) |
 | **Generalized Hopf / Bautin (GH)** | HB | First Lyapunov coefficient vanishes (supercritical $\leftrightarrow$ subcritical) | $l_1(u, p_1, p_2) = 0$ (`compute_first_lyapunov_coefficient`) |
-| **Zero-Hopf (ZH)** | LP / HB | Simultaneous zero eigenvalue and imaginary pair $\pm i\omega$ | Hopf test function on LP, or $\det(J_u) = 0$ on HB |
+| **Zero-Hopf (ZH)** | LP / HB ($n \ge 3$) | Simultaneous zero eigenvalue and imaginary pair $\pm i\omega$ | $\psi_{\text{HB}}(J_u) = 0$ on LP, or $\det(J_u) = 0$ on HB |
+
+See [Bifurcation Theory & Branch Switching](bifurcations.md) for the complete derivations of Kuznetsov's $l_1$, the codimension-2 test functions, canonical Hopf eigenvector normalization, and continuous SVD null-vector sign alignment.
 
 ---
 
@@ -119,7 +121,7 @@ By the **de Boor-Swartz theorem** (1973), Gauss-Legendre collocation achieves **
    `make_collocation_bordered_solver` implements a `BorderedOperatorSolver` that first eliminates all interior Gauss variables in parallel via `jax.vmap(lu_factor)` (de Boor–Swartz condensation), and then solves the resulting cyclic block-bidiagonal + border system in $\mathcal{O}(N n^3)$ time and $\mathcal{O}(N n^2)$ memory via sequential orthogonal block-QR elimination (`jax.lax.scan`)—never allocating an $(Nn) \times (Nn)$ dense matrix. See [Structured Linear Algebra for Collocation BVPs](collocation_condensation.md) for the complete derivation.
 
 4. **Floquet Multipliers, Periodic Real Schur & Orbit Bifurcations (`bvp.floquet`)**:
-   The exact same local block elimination yields the per-interval transition matrices $M_k = C_0 I_n - \sum_{j=1}^m C_j K_{k, j}$ (`monodromy_factors_condensation`), whose cyclic product is the **monodromy matrix** $M = M_{N-1} \cdots M_1 M_0 \in \mathbb{R}^{n \times n}$. For stiff or long-period orbits where multiplying $M_k$ explicitly suffers from overflow or roundoff loss, `bifurx` provides a pure-JAX **Periodic Real Schur decomposition** (`periodic_real_schur`, `compute_floquet_multipliers(..., method="periodic_qr")`, `compute_floquet_exponents`) that extracts multipliers and real Floquet exponents $\sigma_i = \frac{1}{T}\log|\mu_i|$ directly from the factors $\{M_k\}$. See [Periodic Real Schur for Stiff Floquet Analysis](periodic_schur_floquet.md).
+   The exact same local block elimination yields the per-interval transition matrices $M_k = C_0 I_n - \sum_{j=1}^m C_j K_{k, j}$ (`monodromy_factors_condensation`), whose cyclic product is the **monodromy matrix** $M = M_{N-1} \cdots M_1 M_0 \in \mathbb{R}^{n \times n}$. To avoid overflow or roundoff loss on stiff or long-period orbits, `continue_periodic_orbit(..., compute_floquet=True)` uses the pure-JAX **Periodic Real Schur decomposition** (`floquet_method="periodic_qr"`, default) via `evaluate_floquet_diagnostics_from_factors`—extracting multipliers and real Floquet exponents $\sigma_i = \frac{1}{T}\log|\mu_i|$ directly from $\{M_k\}$ without ever multiplying them. See [Periodic Real Schur for Stiff Floquet Analysis](periodic_schur_floquet.md).
 
    The eigenvalues $\mu_1, \dots, \mu_n$ of $M$ are the **Floquet multipliers**. Every autonomous periodic orbit has a trivial multiplier $\mu_1 = 1$; the orbit is linearly stable if $|\mu_j| < 1$ for all $j \ge 2$. Periodic-orbit bifurcations are detected via:
    - **Limit Point of Cycles / Fold (LPC)**: $\psi_{\text{LPC}} = \dot{p} = 0$ (multiplier crosses $+1$).
