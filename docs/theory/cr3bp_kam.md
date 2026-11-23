@@ -275,32 +275,7 @@ In real spaceflight mission design, textbook periodic halo orbits are idealized 
    - For solar and astrophysics observatories at Sun-Earth $L_1$ (SOHO, DSCOVR) or $L_2$ (JWST), direct line-of-sight between Earth and the Sun introduces blinding solar radio frequency interference.
    - Lissajous orbits on KAM 2-tori can be engineered with specific amplitude ratios $(A_x, A_y, A_z)$ and phase offsets such that the ground tracking station never points directly into the solar disk, preventing communication blackouts!
 
-```
-                  +-----------------------------------+
-                  |   Periodic Orbit (1-Torus T^1)    |
-                  +-----------------+-----------------+
-                                    |
-                    Transverse Elliptic Floquet Modes
-                         (e^{±i ν}, frequency ω_2)
-                                    |
-                                    v
-                  +-----------------------------------+
-                  |      KAM 2-Tori (Lissajous)       |
-                  | Non-resonant Diophantine ω_1/ω_2  |
-                  +-----------------+-----------------+
-                                    |
-                         Station-Keeping Control
-                                    |
-                                    v
-        +---------------------------+---------------------------+
-        |                                                       |
-        v                                                       v
-+---------------+                                       +---------------+
-|     JWST      |                                       |     SOHO      |
-| Sun-Earth L_2 |                                       | Sun-Earth L_1 |
-| Quasi-Halo    |                                       | Lissajous     |
-+---------------+                                       +---------------+
-```
+In practice, mission design follows a three-stage hierarchy: starting from a **1-torus periodic orbit** ($\mathbb{T}^1$, such as a Lyapunov or halo family), exciting its **transverse elliptic Floquet modes** ($e^{\pm i\nu}$, frequency $\omega_2$) yields a **non-resonant Diophantine KAM 2-torus** (Lissajous or quasi-halo orbit), which is then maintained with minimal **station-keeping control**—as flown by **JWST** (Sun–Earth $L_2$ quasi-halo) and **SOHO** (Sun–Earth $L_1$ Lissajous).
 
 ---
 

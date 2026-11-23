@@ -221,35 +221,13 @@ falling back to $\gamma_{\text{rej}} \Delta s_k$ (default $0.25 \Delta s_k$) if 
 
 ## 7. Pure-JAX Path-Tracking Architecture (`bifurx.homotopy.tracker`)
 
-All components above assemble into a single XLA-compilable loop in `track_arclength_scan` using `jax.lax.scan`:
+All components above assemble into a single XLA-compilable loop in `track_arclength_scan` using `jax.lax.scan`. Starting from the carry state $(u_k, p_k, \tau_k, \text{chart}_k, \Delta s_k, w_k, \omega_k)$, each step executes five stages in sequence:
 
-```
-  (u_k, p_k, tau_k, chart_k, ds_k, weights_k, omega_k)
-                         │
-                         ▼
-       ┌─────────────────────────────────────┐
-       │ 1. Predictor (Euler or Padé (2,1))  │
-       └─────────────────┬───────────────────┘
-                         ▼
-       ┌─────────────────────────────────────┐
-       │ 2. Update Weighted Norm w_k         │
-       └─────────────────┬───────────────────┘
-                         ▼
-       ┌─────────────────────────────────────┐
-       │ 3. Bordered Newton Corrector        │
-       │    (Dense LU / Block LU / Operator) │
-       └─────────────────┬───────────────────┘
-                         ▼
-       ┌─────────────────────────────────────┐
-       │ 4. Update Chart, Tangent & Taylor3  │
-       │    (Orientation <tau_{k+1},tau_k>>0)│
-       └─────────────────┬───────────────────┘
-                         ▼
-       ┌─────────────────────────────────────┐
-       │ 5. Step Observer (e.g. Eigvals /    │
-       │    Floquet) & Adaptive ds_{k+1}     │
-       └─────────────────────────────────────┘
-```
+1. **Predictor**: Extrapolate $(u_{\text{pred}}, p_{\text{pred}})$ using Euler tangent or Padé $(2,1)$ rational prediction.
+2. **Weighted Norm Update**: Refresh the scale-invariant coordinate weights $w_k$.
+3. **Bordered Newton Corrector**: Converge back onto $H(u, p) = 0$ subject to the arclength hyperplane using dense LU, block LU, or a custom `BorderedOperatorSolver`.
+4. **Chart, Tangent & Taylor Update**: Update the local chart, recompute the unit tangent $\tau_{k+1}$ oriented so $\langle \tau_{k+1}, \tau_k \rangle > 0$, and update higher-order derivatives for Padé prediction.
+5. **Step Observer & Adaptive Step Size**: Evaluate diagnostics (e.g., equilibrium eigenvalues or Floquet multipliers) and update $\Delta s_{k+1}$ via Timme's step-size controller.
 
 Three functional hooks allow arbitrary mathematical problems to plug into `track_arclength_scan` without modifying the core tracker:
 - **`chart_fn(u, p) -> chart`**: Updates a moving local reference chart on each accepted step (for example, the reference velocity $\dot{u}_{\text{ref}}$ in the Poincaré integral phase condition of a periodic orbit).

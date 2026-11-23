@@ -22,23 +22,6 @@ The table below maps each dynamical-systems module in `bifurx` directly onto the
 | **Periodic Orbits (Limit Cycles)** | `bifurx.bvp` | $U = (u_{\text{mesh}}, u_{\text{gauss}}, T)$, $\lambda = p$ | Phase reference $\dot{u}_{\text{ref}}$ | de Boor-Swartz Block Condensation | Monodromy matrix $M$ & Floquet multipliers (LPC, PD, NS) |
 | **iPRC Continuation** | `bifurx.prc` | Periodic orbit $U$ + linear adjoint $Z(t)$ | Phase reference $\dot{u}_{\text{ref}}$ | Condensed BVP + Linear Adjoint Solve | Peak sensitivity & zero crossings |
 
-```
-                       ┌───────────────────────────────────────┐
-                       │   bifurx.homotopy (General Core)      │
-                       │  track_arclength_scan / Padé(2,1) /   │
-                       │  Kantorovich Newton / Timme Stepsize  │
-                       └───────────────────┬───────────────────┘
-                                           │
-          ┌────────────────────┬───────────┴──────────┬────────────────────┐
-          ▼                    ▼                      ▼                    ▼
- ┌─────────────────┐  ┌─────────────────┐   ┌──────────────────┐  ┌────────────────┐
- │  Equilibria     │  │ Codim-2 Curves  │   │ Periodic Orbits  │  │  iPRC / Phase  │
- │  continuation   │  │ codim2 (LP, HB) │   │ bvp (Collocation │  │  prc (Adjoint  │
- │  bifurcations   │  │ CP, BT, GH, ZH  │   │ + Condensation   │  │  Linear BVP)   │
- │  ABE switching  │  │                 │   │ + Floquet/Mesh)  │  │                │
- └─────────────────┘  └─────────────────┘   └──────────────────┘  └────────────────┘
-```
-
 ---
 
 ## 2. Equilibrium Continuation & Codim-1 Bifurcations (`bifurx.continuation`, `bifurx.bifurcations`)
