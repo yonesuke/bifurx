@@ -333,7 +333,7 @@ def test_jit_compatibility_and_no_dense_nn_matrix():
     for eqn in closed_jaxpr.jaxpr.eqns:
         for outvar in eqn.outvars:
             aval = outvar.aval
-            if hasattr(aval, "size"):
+            if isinstance(aval, jax.core.ShapedArray):
                 assert aval.size < dense_threshold, (
                     f"Dense O((N*n)^2) allocation detected in jaxpr: {eqn.primitive} -> {aval.shape}"
                 )
