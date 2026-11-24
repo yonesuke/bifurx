@@ -19,13 +19,11 @@ class BifurcationProblem:
         Residual function F(u, p, **kwargs) returning a 1D jax.Array of residuals.
     u0 : jax.Array
         Initial state vector u.
-    p0 : float
+    p0 : float or jax.Array
         Initial continuation parameter value p.
     param_bounds : tuple[float, float] | None, optional
         Optional (p_min, p_max) default bounds to terminate continuation.
         Can be overridden by passing `param_bounds` directly to `continuation()` or `continuation_scan()`.
-    param_index : int | None, optional
-        Optional index if parameter p is an element of a parameter vector.
     jac_u : Callable[..., jax.Array] | None, optional
         Optional custom function computing $\nabla_u F(u, p, **kwargs)$ returning an $(n, n)$ array.
         Defaults to autodiff via `jax.jacobian`.
@@ -38,9 +36,8 @@ class BifurcationProblem:
 
     fn: Callable[..., jax.Array]
     u0: jax.Array
-    p0: float
+    p0: jax.Array
     param_bounds: tuple[float, float] | None = None
-    param_index: int | None = None
     jac_u: Callable[..., jax.Array] | None = None
     jac_p: Callable[..., jax.Array] | None = None
     kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
@@ -49,9 +46,8 @@ class BifurcationProblem:
         self,
         fn: Callable[..., jax.Array],
         u0: Any,
-        p0: float | int,
+        p0: float | int | jax.Array,
         param_bounds: tuple[float, float] | None = None,
-        param_index: int | None = None,
         jac_u: Callable[..., jax.Array] | None = None,
         jac_p: Callable[..., jax.Array] | None = None,
         **kwargs: Any,
@@ -59,32 +55,30 @@ class BifurcationProblem:
         object.__setattr__(self, "fn", fn)
         u_arr = jnp.atleast_1d(jnp.asarray(u0, dtype=jnp.float64))
         object.__setattr__(self, "u0", u_arr)
-        object.__setattr__(self, "p0", float(p0))
+        object.__setattr__(self, "p0", jnp.squeeze(jnp.asarray(p0, dtype=jnp.float64)))
         object.__setattr__(self, "param_bounds", param_bounds)
-        object.__setattr__(self, "param_index", param_index)
         object.__setattr__(self, "jac_u", jac_u)
         object.__setattr__(self, "jac_p", jac_p)
         object.__setattr__(self, "kwargs", kwargs)
 
-    def tree_flatten(self) -> tuple[tuple[jax.Array, float], tuple[Any, ...]]:
+    def tree_flatten(self) -> tuple[tuple[jax.Array, jax.Array], tuple[Any, ...]]:
         """Flatten into JAX pytree leaves ``(u0, p0)`` and static auxiliary data."""
         children = (self.u0, self.p0)
-        aux = (self.fn, self.param_bounds, self.param_index, self.jac_u, self.jac_p, self.kwargs)
+        aux = (self.fn, self.param_bounds, self.jac_u, self.jac_p, self.kwargs)
         return children, aux
 
     @classmethod
     def tree_unflatten(
-        cls, aux: tuple[Any, ...], children: tuple[jax.Array, float]
+        cls, aux: tuple[Any, ...], children: tuple[jax.Array, jax.Array]
     ) -> BifurcationProblem:
         """Rebuild a problem from JAX pytree leaves without re-running ``__init__``."""
-        fn, param_bounds, param_index, jac_u, jac_p, kwargs = aux
+        fn, param_bounds, jac_u, jac_p, kwargs = aux
         u0, p0 = children
         obj = object.__new__(cls)
         object.__setattr__(obj, "fn", fn)
         object.__setattr__(obj, "u0", u0)
         object.__setattr__(obj, "p0", p0)
         object.__setattr__(obj, "param_bounds", param_bounds)
-        object.__setattr__(obj, "param_index", param_index)
         object.__setattr__(obj, "jac_u", jac_u)
         object.__setattr__(obj, "jac_p", jac_p)
         object.__setattr__(obj, "kwargs", kwargs)

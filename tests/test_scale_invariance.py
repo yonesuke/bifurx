@@ -65,7 +65,7 @@ def test_continuation_large_scale_system():
     opts = ContinuationOptions(
         ds=0.05,
         max_steps=25,
-        newton=NewtonOptions(tol=1e-8, rel_tol=1e-8),
+        newton=NewtonOptions(tol=1e-8),
     )
     res = continuation(problem=prob, options=opts)
 

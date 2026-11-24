@@ -7,9 +7,13 @@ import jax.numpy as jnp
 
 from bifurx.bvp.collocation import (
     CollocationProblem,
+    branch_from_hopf,
+    initialize_from_hopf,
     solve_periodic_orbit,
 )
 from bifurx.continuation import bordered_newton_solve, continuation, continuation_scan
+from bifurx.homotopy import compute_tangent, make_gmres_bordered_solver
+from bifurx.prc import compute_iprc
 from bifurx.problem import BifurcationProblem
 
 
@@ -247,3 +251,60 @@ def test_continuation_scan_pade21_jit_and_vmap():
     assert batch_res.u.shape == (16, 20, 1)
     assert bool(jnp.all(batch_res.converged))
     assert jnp.allclose(batch_res.u[:, :, 0] ** 2, batch_res.p, atol=1e-4)
+
+
+def test_pure_jax_jit_tangent_hopf_and_iprc():
+    """Verify compute_tangent, BifurcationProblem(traced p0), Hopf seeds, and compute_iprc under jax.jit."""
+
+    def _f_hopf(u: jnp.ndarray, p: float | jnp.ndarray) -> jnp.ndarray:
+        x, y = u[0], u[1]
+        r2 = x * x + y * y
+        return jnp.array([p * x - y - x * r2, x + p * y - y * r2])
+
+    # 1. BifurcationProblem constructed with traced p0 inside jax.jit
+    @jax.jit
+    def _eval_res_at(p_val: jnp.ndarray) -> jnp.ndarray:
+        prob = BifurcationProblem(f_pitchfork, u0=jnp.array([1.0]), p0=p_val)
+        return prob.residual(prob.u0, prob.p0)
+
+    assert jnp.allclose(_eval_res_at(jnp.array(1.0)), jnp.array([0.0]), atol=1e-12)
+
+    # 2. compute_tangent with both bordered_solver and jac_u/jac_p under jax.jit
+    prob_pf = BifurcationProblem(f_pitchfork, u0=[1.0], p0=1.0)
+    gmres_solver = make_gmres_bordered_solver(prob_pf.residual)
+    tau_jit = jax.jit(
+        lambda u_v, p_v: compute_tangent(
+            jac_u_fn=prob_pf.jacobian_u,
+            jac_p_fn=prob_pf.jacobian_p,
+            u0=u_v,
+            p0=p_v,
+            bordered_solver=gmres_solver,
+        )
+    )(jnp.array([1.0]), jnp.array(1.0))
+    assert bool(jnp.all(jnp.isfinite(tau_jit)))
+    assert abs(float(jnp.linalg.norm(tau_jit)) - 1.0) < 1e-10
+
+    # 3. initialize_from_hopf and branch_from_hopf under jax.jit
+    cprob = CollocationProblem(_f_hopf, dim=2, num_intervals=16, num_gauss_points=3)
+    mesh, u_m, u_g, T0, p0 = jax.jit(
+        lambda u_h, p_h: initialize_from_hopf(cprob, u_h, p_h, eps=0.05, direction=1.0)
+    )(jnp.zeros(2), jnp.array(0.0))
+    assert mesh.shape == (17,)
+    assert u_m.shape == (16, 2)
+    assert u_g.shape == (16, 3, 2)
+    assert abs(float(T0) - 2.0 * float(jnp.pi)) < 1e-8
+    assert float(p0) > 0.0
+
+    orb_hopf = jax.jit(
+        lambda u_h, p_h, ds_v: branch_from_hopf(cprob, u_h, p_h, ds=ds_v, period_weight=1.0)
+    )(jnp.zeros(2), jnp.array(0.0), jnp.array(0.1))
+    assert bool(orb_hopf.converged)
+    assert float(orb_hopf.amplitude) > 1e-3
+
+    # 4. compute_iprc with compute_zero_crossings=False under jax.jit
+    iprc_jit = jax.jit(
+        lambda orb: compute_iprc(orb, compute_zero_crossings=False)
+    )(orb_hopf)
+    assert iprc_jit.Z.shape == (16, 2)
+    assert bool(jnp.all(jnp.isfinite(iprc_jit.Z)))
+    assert iprc_jit.zero_crossings == []

@@ -36,12 +36,11 @@ class _OptionsBase:
 class NewtonOptions(_OptionsBase):
     """Options for bordered Newton corrector iterations."""
 
-    _child_fields: ClassVar[tuple[str, ...]] = ("tol", "step_tol", "rel_tol")
+    _child_fields: ClassVar[tuple[str, ...]] = ("tol", "step_tol")
     _aux_fields: ClassVar[tuple[str, ...]] = ("max_iters", "solver_method")
 
     tol: float = 1e-8
     step_tol: float = 1e-8
-    rel_tol: float = 1e-8
     max_iters: int = 15
     solver_method: str = "auto"
 
@@ -120,7 +119,6 @@ def resolve_continuation_options(
     bif_u_tol: float | None = None,
     newton_tol: float | None = None,
     newton_step_tol: float | None = None,
-    newton_rel_tol: float | None = None,
     newton_max_iters: int | None = None,
     solver_method: str | None = None,
     extra_kwargs: dict[str, Any] | None = None,
@@ -139,11 +137,6 @@ def resolve_continuation_options(
         if newton_step_tol is not None
         else extra.get("newton_step_tol", extra.get("step_tol"))
     )
-    rel_tol_val = (
-        newton_rel_tol
-        if newton_rel_tol is not None
-        else extra.get("newton_rel_tol", extra.get("rel_tol"))
-    )
     max_iters_val = newton_max_iters if newton_max_iters is not None else extra.get("max_iters")
     solver_val = solver_method if solver_method is not None else extra.get("solver_method")
 
@@ -152,7 +145,6 @@ def resolve_continuation_options(
         for k, v in (
             ("tol", tol_val),
             ("step_tol", step_tol_val),
-            ("rel_tol", rel_tol_val),
             ("max_iters", max_iters_val),
             ("solver_method", solver_val),
         )

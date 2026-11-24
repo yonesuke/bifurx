@@ -49,7 +49,6 @@ def test_options_default_values():
     newton = NewtonOptions()
     assert newton.tol == 1e-8
     assert newton.step_tol == 1e-8
-    assert newton.rel_tol == 1e-8
     assert newton.max_iters == 15
     assert newton.solver_method == "auto"
 
@@ -93,12 +92,12 @@ def test_options_immutability():
 def test_options_replace_method():
     """Verify that .replace() returns a new updated instance without modifying original."""
     newton0 = NewtonOptions()
-    newton1 = newton0.replace(tol=1e-5, rel_tol=1e-6, max_iters=30)
+    newton1 = newton0.replace(tol=1e-5, step_tol=1e-6, max_iters=30)
     assert newton0.tol == 1e-8
-    assert newton0.rel_tol == 1e-8
+    assert newton0.step_tol == 1e-8
     assert newton0.max_iters == 15
     assert newton1.tol == 1e-5
-    assert newton1.rel_tol == 1e-6
+    assert newton1.step_tol == 1e-6
     assert newton1.max_iters == 30
 
     cont0 = ContinuationOptions()
@@ -112,7 +111,7 @@ def test_options_replace_method():
     assert cont1.bif_p_tol == 1e-5
     assert cont1.bif_u_tol == 1e-4
     assert cont1.newton.tol == 1e-5
-    assert cont1.newton.rel_tol == 1e-6
+    assert cont1.newton.step_tol == 1e-6
 
     colloc0 = CollocationOptions()
     colloc1 = colloc0.replace(num_intervals=10, min_amplitude=1e-3, period_weight=0.25)
@@ -129,7 +128,7 @@ def test_options_pytree_registration():
         ds=0.02,
         max_steps=50,
         predictor="pade21",
-        newton=NewtonOptions(tol=1e-6, rel_tol=1e-7, max_iters=20),
+        newton=NewtonOptions(tol=1e-6, step_tol=1e-7, max_iters=20),
         tracker=TrackerParameters(a=0.2, beta_tau=0.5),
         norm=WeightedNormOptions(scale_min=1e-3),
         bif_p_tol=1e-5,

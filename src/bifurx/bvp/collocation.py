@@ -94,7 +94,7 @@ class PeriodicOrbitResult(NamedTuple):
 
     @property
     def amplitude(self) -> jax.Array:
-        """Root-mean-square amplitude of orbit around its mean state (#14)."""
+        """Root-mean-square amplitude of orbit around its mean state."""
         return _orbit_amplitude(self.u_mesh)
 
     def evaluate(self, t: float | jax.Array) -> jax.Array:
@@ -299,7 +299,8 @@ def initialize_from_hopf(
     crit_mask = complex_mask & (jnp.abs(jnp.real(eigs)) < 1e-2)
     crit_freqs = jnp.where(crit_mask, jnp.abs(jnp.imag(eigs)), -1.0)
     matches = (jnp.abs(crit_freqs - omega) < 1e-3) & (crit_freqs > 0)
-    if bool(jnp.sum(matches) > 2):
+
+    def _warn_degenerate() -> None:
         warnings.warn(
             "Degenerate Hopf point detected: critical imaginary eigenvalue has algebraic "
             "multiplicity >= 2. A single eigenvector seed may collapse onto the trivial "
@@ -307,6 +308,12 @@ def initialize_from_hopf(
             UserWarning,
             stacklevel=2,
         )
+
+    jax.lax.cond(
+        jnp.sum(matches) > 2,
+        lambda: jax.debug.callback(_warn_degenerate),
+        lambda: None,
+    )
 
     v_r, v_i = jnp.real(vec), jnp.imag(vec)
     norm_v = jnp.sqrt(jnp.dot(v_r, v_r) + jnp.dot(v_i, v_i))
@@ -390,11 +397,11 @@ def branch_from_hopf(
     and subcritical Hopf bifurcations without fixed-parameter tuning.
     """
     base_opts = CollocationOptions() if options is None else options
-    tol_val = base_opts.tol if tol is None else float(tol)
+    tol_val = base_opts.tol if tol is None else tol
     max_iters_val = base_opts.max_iters if max_iters is None else int(max_iters)
-    min_amp_val = base_opts.min_amplitude if min_amplitude is None else float(min_amplitude)
-    t_w = float(base_opts.period_weight if period_weight is None else period_weight)
-    p_w = float(param_weight)
+    min_amp_val = base_opts.min_amplitude if min_amplitude is None else min_amplitude
+    t_w = base_opts.period_weight if period_weight is None else period_weight
+    p_w = param_weight
     ds_val = jnp.squeeze(jnp.asarray(ds, dtype=jnp.float64))
 
     u_h = jnp.asarray(u_hopf, dtype=jnp.float64)
@@ -462,7 +469,6 @@ def branch_from_hopf(
         ds=ds_val,
         tol=tol_val,
         step_tol=tol_val,
-        rel_tol=min(tol_val, 1e-10),
         max_iters=max_iters_val,
         border_c=w_arc[:-1] * tau0[:-1],
         border_d=w_arc[-1] * tau0[-1],
@@ -610,14 +616,14 @@ def solve_periodic_orbit(
 def periodic_orbit_arclength_weights(
     problem: CollocationProblem,
     mesh: ArrayLike,
-    period_weight: float = 1.0,
-    param_weight: float = 1.0,
+    period_weight: float | jax.Array = 1.0,
+    param_weight: float | jax.Array = 1.0,
 ) -> jax.Array:
     """Build exact Gauss-Legendre L2[0, 1] arclength weights for `[u_mesh, u_gauss, T, p]`."""
-    if period_weight < 0.0:
+    if not isinstance(period_weight, jax.core.Tracer) and period_weight < 0.0:
         msg = f"period_weight must be non-negative, got {period_weight}."
         raise ValueError(msg)
-    if param_weight < 0.0:
+    if not isinstance(param_weight, jax.core.Tracer) and param_weight < 0.0:
         msg = f"param_weight must be non-negative, got {param_weight}."
         raise ValueError(msg)
     mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
@@ -627,11 +633,13 @@ def periodic_orbit_arclength_weights(
     w_gauss = jnp.broadcast_to(
         (h_arr[:, None] * problem.weights[None, :])[:, :, None], (N, m, n)
     ).ravel()
+    t_w_arr = jnp.squeeze(jnp.asarray(period_weight, dtype=jnp.float64))
+    p_w_arr = jnp.squeeze(jnp.asarray(param_weight, dtype=jnp.float64))
     return jnp.concatenate(
         [
             w_mesh,
             w_gauss,
-            jnp.array([float(period_weight) ** 2, float(param_weight) ** 2], dtype=jnp.float64),
+            jnp.stack([t_w_arr**2, p_w_arr**2]),
         ]
     )
 
@@ -663,7 +671,7 @@ def continue_periodic_orbit(
     mesh_damping: float = 0.7,
     period_bounds: tuple[float, float] | None = None,
 ) -> list[PeriodicOrbitResult]:
-    """Continue a family of periodic orbits along parameter p via `bifurx.homotopy` (#15)."""
+    """Continue a family of periodic orbits along parameter p via `bifurx.homotopy`."""
     if param_mode not in ("natural", "arclength"):
         msg = f"Unknown param_mode: {param_mode}. Choose from 'natural' or 'arclength'."
         raise ValueError(msg)
@@ -703,7 +711,6 @@ def continue_periodic_orbit(
         if tol is not None
         else (coll_opts.tol if has_coll else (cont_opts.newton.tol if has_cont else 1e-7))
     )
-    rel_tol_val = float(cont_opts.newton.rel_tol if has_cont else min(tol_val, 1e-10))
     max_iters_val = int(
         max_iters
         if max_iters is not None
@@ -732,9 +739,12 @@ def continue_periodic_orbit(
 
     init_mesh = jnp.asarray(initial_orbit.mesh, dtype=jnp.float64)
     if param_mode == "arclength":
-        _ = periodic_orbit_arclength_weights(
-            problem, init_mesh, period_weight=t_w, param_weight=p_w
-        )
+        if t_w < 0.0:
+            msg = f"period_weight must be non-negative, got {t_w}."
+            raise ValueError(msg)
+        if p_w < 0.0:
+            msg = f"param_weight must be non-negative, got {p_w}."
+            raise ValueError(msg)
 
     if compute_floquet:
         if use_periodic_schur:
@@ -918,7 +928,6 @@ def continue_periodic_orbit(
             stop_fn=stop_fn,
             tol=tol_val,
             step_tol=tol_val,
-            rel_tol=rel_tol_val,
             max_newton_iters=max_iters_val,
             solver_method=cont_opts.newton.solver_method,
             tracker_params=cont_opts.tracker,
