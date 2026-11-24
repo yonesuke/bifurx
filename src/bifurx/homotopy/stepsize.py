@@ -8,6 +8,11 @@ import jax.numpy as jnp
 
 from bifurx.homotopy.pytree import PyTreeOptionsBase
 
+_OMEGA_EXTRAP_FACTOR = 2.0
+_OMEGA_EXTRAP_MAX_RATIO = 8.0
+_REJECT_MAX_EXP_STEPS = 10
+_REJECT_MAX_SHRINK_FACTOR = 0.75
+
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
@@ -72,7 +77,9 @@ def update_step_size(
             jnp.isfinite(omega_prev) & (omega_prev > 0.0), omega_prev, omega_safe
         )
         omega_est = jnp.clip(
-            omega_safe + 2.0 * (omega_safe - omega_prev_safe), omega_safe, 8.0 * omega_safe
+            omega_safe + _OMEGA_EXTRAP_FACTOR * (omega_safe - omega_prev_safe),
+            omega_safe,
+            _OMEGA_EXTRAP_MAX_RATIO * omega_safe,
         )
         has_err = jnp.isfinite(local_error) & (local_error > 1e-30)
         denom = jnp.where(has_err, omega_est * local_error, 1.0)
@@ -87,7 +94,7 @@ def update_step_size(
         return jnp.where(last_step_failed, jnp.minimum(ds_acc, ds), ds_acc)
 
     def _rejected_ds() -> jax.Array:
-        j = jnp.clip(iterations - 2, 0, 10)
+        j = jnp.clip(iterations - 2, 0, _REJECT_MAX_EXP_STEPS)
         theta_valid = jnp.isfinite(theta) & (theta > 0.0) & (iterations >= 2)
         theta_safe = jnp.where(theta_valid, theta, 1.0)
         Theta_j = theta_safe ** (1.0 / (2.0**j))
@@ -100,7 +107,7 @@ def update_step_size(
         ratio = jnp.clip(
             _nth_root(num / den, predictor_order),
             p_opts.reject_fallback_factor,
-            0.75,
+            _REJECT_MAX_SHRINK_FACTOR,
         )
         return jnp.where(use_formula, ratio * ds, p_opts.reject_fallback_factor * ds)
 

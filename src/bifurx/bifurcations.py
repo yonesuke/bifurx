@@ -10,6 +10,15 @@ from bifurx.homotopy.bordered import build_bordered_matrix, solve_bordered_syste
 from bifurx.homotopy.corrector import correct_arclength_step
 from bifurx.problem import BifurcationProblem
 
+_HOPF_DEFAULT_REL_TOL = 1e-4
+_HOPF_MIN_OMEGA = 1e-8
+_LIN_RES_FACTOR = 0.5
+_LIN_SCALE_TOL = 1e-6
+_PROJECT_MAX_ITERS = 6
+_REFINE_RADIUS_FACTOR = 2.0
+_REFINE_RES_ABS_FLOOR = 1e-6
+_REFINE_RES_REL_FACTOR = 10.0
+
 
 def _test_func_branch_point(
     Ju: jax.Array,
@@ -110,6 +119,8 @@ def evaluate_point_diagnostics(
     Ju: jax.Array,
     tangent: jax.Array,
     Jp: jax.Array | None = None,
+    *,
+    hopf_rel_tol: float = _HOPF_DEFAULT_REL_TOL,
 ) -> tuple[dict[str, jax.Array], jax.Array]:
     """Compute all codim-1 test functions (LP, BP, HB), stability, and diagnostics in pure JAX."""
     eigs = jnp.linalg.eigvals(Ju)
@@ -118,7 +129,7 @@ def evaluate_point_diagnostics(
     test_funcs = {
         "LP": tangent[-1],
         "BP": _test_func_branch_point(Ju, Jp=Jp, tangent=tangent),
-        "HB": test_func_hopf(Ju, eigs=eigs),
+        "HB": test_func_hopf(Ju, eigs=eigs, rel_tol=hopf_rel_tol),
         "st_idx": jnp.sum(real_parts > 0.0),
         "min_eig": jnp.min(jnp.abs(eigs)),
     }
@@ -242,7 +253,7 @@ def _augmented_newton_solve(
         lin_res = J @ dx + r_cur
         row_scale = jnp.linalg.norm(J, axis=1) * step_norm
         lin_ok = jnp.all(jnp.isfinite(dx)) & jnp.all(
-            jnp.abs(lin_res) <= 0.5 * jnp.abs(r_cur) + 1e-6 * row_scale
+            jnp.abs(lin_res) <= _LIN_RES_FACTOR * jnp.abs(r_cur) + _LIN_SCALE_TOL * row_scale
         )
         x_cand = x_cur + dx
         r_cand = jnp.atleast_1d(jnp.asarray(res_fn(x_cand), dtype=jnp.float64)).ravel()
@@ -338,7 +349,7 @@ def _refine_hopf_augmented(
         & conv
         & jnp.all(jnp.isfinite(u_fin))
         & jnp.isfinite(p_fin)
-        & (jnp.abs(om_fin) > 1e-8)
+        & (jnp.abs(om_fin) > _HOPF_MIN_OMEGA)
     )
     return u_fin, p_fin, ok
 
@@ -387,7 +398,7 @@ def refine_bifurcation_point(
             ds=alpha * ds_ab,
             tol=tol,
             step_tol=tol,
-            max_iters=6,
+            max_iters=_PROJECT_MAX_ITERS,
         )
         ok = res.converged & jnp.all(jnp.isfinite(res.u)) & jnp.isfinite(res.p)
         return jnp.where(ok, res.u, u_ch), jnp.where(ok, res.p, p_ch)
@@ -438,7 +449,7 @@ def refine_bifurcation_point(
     p_mid = 0.5 * (p_a_j + p_b_j)
     u_pol, p_pol = _project_on_curve(alpha_opt)
     z_pol = jnp.concatenate([u_pol, jnp.atleast_1d(p_pol)])
-    tol_radius = 2.0 * jnp.maximum(ds_ab, 1.0 + 0.1 * jnp.linalg.norm(z_pol))
+    tol_radius = _REFINE_RADIUS_FACTOR * jnp.maximum(ds_ab, 1.0 + 0.1 * jnp.linalg.norm(z_pol))
 
     tau_opt = (1.0 - alpha_opt) * tau_a_j + alpha_opt * tau_b_j
     tau_norm = jnp.linalg.norm(tau_opt)
@@ -457,7 +468,7 @@ def refine_bifurcation_point(
         ms_ok = (
             ms_conv
             & jnp.all(jnp.isfinite(z_ms))
-            & (res_ms <= jnp.maximum(1e-6, 10.0 * res_pol))
+            & (res_ms <= jnp.maximum(_REFINE_RES_ABS_FLOOR, _REFINE_RES_REL_FACTOR * res_pol))
             & (jnp.linalg.norm(z_ms - z_pol) <= tol_radius)
         )
         u_res = jnp.where(ms_ok, u_ms, u_pol)

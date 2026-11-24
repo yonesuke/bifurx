@@ -11,6 +11,7 @@ def _equidistribute_mesh(
     alpha: float = 1.0,
     beta: float = 0.0,
     damping: float = 0.7,
+    min_step_ratio: float = 1e-4,
 ) -> jax.Array:
     """Compute an equidistributed adaptive mesh based on solution gradients (AUTO-07P ADPTDS)."""
     mesh = jnp.asarray(sol.mesh, dtype=jnp.float64)
@@ -44,7 +45,7 @@ def _equidistribute_mesh(
     damping_val = jnp.clip(jnp.asarray(damping, dtype=jnp.float64), 0.0, 1.0)
     t_new = (1.0 - damping_val) * mesh + damping_val * t_equi
 
-    min_step = jnp.arange(N + 1, dtype=jnp.float64) * (1e-4 / N)
+    min_step = jnp.arange(N + 1, dtype=jnp.float64) * (min_step_ratio / N)
     t_new = jnp.maximum.accumulate(t_new - min_step) + min_step
     t_new = t_new.at[0].set(0.0).at[-1].set(1.0)
 
@@ -60,9 +61,12 @@ def redistribute_mesh(
     re_solve: bool = True,
     tol: float = 1e-8,
     max_iters: int = 15,
+    min_step_ratio: float = 1e-4,
 ) -> PeriodicOrbitResult:
     """Adaptively redistribute collocation mesh and re-solve orbit on the new mesh in pure JAX."""
-    new_mesh = _equidistribute_mesh(sol, alpha=alpha, beta=beta, damping=damping)
+    new_mesh = _equidistribute_mesh(
+        sol, alpha=alpha, beta=beta, damping=damping, min_step_ratio=min_step_ratio
+    )
     N = sol.problem.num_intervals
     m = sol.problem.num_gauss_points
     n = sol.problem.dim
