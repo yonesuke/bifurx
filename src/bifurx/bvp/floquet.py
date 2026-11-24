@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 import jax
 import jax.numpy as jnp
 
+from bifurx.bvp.condensation import condense_local_blocks
+
 if TYPE_CHECKING:
     from bifurx.bvp.collocation import CollocationProblem, PeriodicOrbitResult
 
@@ -24,27 +26,11 @@ def monodromy_factors_condensation(
     u_gauss_arr = jnp.asarray(u_gauss, dtype=jnp.float64)
     T = jnp.squeeze(jnp.asarray(period, dtype=jnp.float64))
     p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
-    m = problem.num_gauss_points
-    n = problem.dim
-    D = jnp.asarray(problem.D, dtype=jnp.float64)
-    C = jnp.asarray(problem.C, dtype=jnp.float64)
-
-    jac_fn = jax.jacobian(lambda u_: problem.fn(u_, p_val, **problem.kwargs))
-    eye_n = jnp.eye(n, dtype=jnp.float64)
-    eye_m = jnp.eye(m, dtype=jnp.float64)
     h = mesh_arr[1:] - mesh_arr[:-1]
-
-    def interval_factor(hk: jax.Array, u_g_k: jax.Array) -> jax.Array:
-        Ju_k = jax.vmap(jac_fn)(u_g_k)
-        A_blocks = (D[:, 1:] / hk)[:, :, None, None] * eye_n[None, None, :, :] - T * eye_m[
-            :, :, None, None
-        ] * Ju_k[:, None, :, :]
-        A_k = jnp.swapaxes(A_blocks, 1, 2).reshape(m * n, m * n)
-        B_k = (-(D[:, 0] / hk)[:, None, None] * eye_n[None, :, :]).reshape(m * n, n)
-        K_k = jnp.linalg.solve(A_k, B_k).reshape(m, n, n)
-        return C[0] * eye_n + jnp.einsum("j,jin->in", C[1:], K_k)
-
-    return jax.vmap(interval_factor)(h, u_gauss_arr)
+    jac_fn = jax.jacobian(lambda u_: problem.fn(u_, p_val, **problem.kwargs))
+    Ju_all = jax.vmap(jax.vmap(jac_fn))(u_gauss_arr)
+    _, _, _, M_k = condense_local_blocks(problem, h, T, Ju_all, adjoint=False)
+    return M_k
 
 
 def monodromy_condensation_raw(
@@ -59,20 +45,6 @@ def monodromy_condensation_raw(
     eye_n = jnp.eye(problem.dim, dtype=jnp.float64)
     M_total, _ = jax.lax.scan(lambda acc, M_k: (M_k @ acc, None), eye_n, factors)
     return M_total
-
-
-def _monodromy_condensation(
-    sol: PeriodicOrbitResult,
-    p: float | jax.Array = 0.0,
-) -> jax.Array:
-    """Compute the monodromy matrix M via de Boor-Swartz collocation Jacobian condensation."""
-    return monodromy_condensation_raw(
-        sol.problem,
-        jnp.asarray(sol.mesh, dtype=jnp.float64),
-        jnp.asarray(sol.u_gauss, dtype=jnp.float64),
-        jnp.squeeze(jnp.asarray(sol.period, dtype=jnp.float64)),
-        p=p,
-    )
 
 
 def _monodromy_factors_from_sol(
@@ -759,7 +731,9 @@ def compute_floquet_multipliers(
           ``(multipliers, M)``.
     """
     if method == "condensation":
-        M = _monodromy_condensation(sol, p=p)
+        factors = _monodromy_factors_from_sol(sol, p=p)
+        eye_n = jnp.eye(sol.problem.dim, dtype=jnp.float64)
+        M, _ = jax.lax.scan(lambda acc, M_k: (M_k @ acc, None), eye_n, factors)
         multipliers = jnp.linalg.eigvals(M)
         idx = jnp.argsort(-jnp.abs(multipliers))
         return multipliers[idx], M

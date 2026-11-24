@@ -155,3 +155,32 @@ def resolve_continuation_options(
         if v is not None
     }
     return base_opts.replace(newton=resolved_newton, **cont_updates)
+
+
+def resolve_collocation_options(
+    options: CollocationOptions | None = None,
+    *,
+    num_intervals: int | None = None,
+    num_gauss_points: int | None = None,
+    eps: Any = None,
+    tol: Any = None,
+    max_iters: int | None = None,
+    min_amplitude: Any = None,
+    period_weight: Any = None,
+) -> CollocationOptions:
+    """Resolve CollocationOptions from an optional base instance and explicit overrides."""
+    base_opts = CollocationOptions() if options is None else options
+    updates = {
+        k: v
+        for k, v in (
+            ("num_intervals", int(num_intervals) if num_intervals is not None else None),
+            ("num_gauss_points", int(num_gauss_points) if num_gauss_points is not None else None),
+            ("eps", eps),
+            ("tol", tol),
+            ("max_iters", int(max_iters) if max_iters is not None else None),
+            ("min_amplitude", min_amplitude),
+            ("period_weight", period_weight),
+        )
+        if v is not None
+    }
+    return base_opts.replace(**updates) if updates else base_opts

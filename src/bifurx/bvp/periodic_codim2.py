@@ -42,6 +42,51 @@ class FixedPeriodContinuationResult(NamedTuple):
     residual_norms: jax.Array  # shape (n_steps + 1,) float64
 
 
+def _resolve_2p_bounds_and_stop(
+    p1_bounds: tuple[float, float] | None,
+    p2_bounds: tuple[float, float] | None,
+) -> tuple[jax.Array, jax.Array, Callable[[jax.Array, jax.Array], jax.Array] | None]:
+    """Resolve p1 bounds and optional p2 stop callback for 2-parameter continuation scans."""
+    p1_min = (
+        jnp.array(-jnp.inf, dtype=jnp.float64)
+        if p1_bounds is None
+        else jnp.asarray(p1_bounds[0], dtype=jnp.float64)
+    )
+    p1_max = (
+        jnp.array(jnp.inf, dtype=jnp.float64)
+        if p1_bounds is None
+        else jnp.asarray(p1_bounds[1], dtype=jnp.float64)
+    )
+    if p2_bounds is not None:
+        p2_lo = jnp.asarray(p2_bounds[0], dtype=jnp.float64)
+        p2_hi = jnp.asarray(p2_bounds[1], dtype=jnp.float64)
+
+        def stop_fn(state_vec: jax.Array, _p1: jax.Array) -> jax.Array:
+            p2_v = jnp.squeeze(state_vec[-1])
+            return (p2_v < p2_lo) | (p2_v > p2_hi)
+    else:
+        stop_fn = None
+    return p1_min, p1_max, stop_fn
+
+
+def _prepend_initial_scan_point(
+    state0: jax.Array,
+    p1_0: jax.Array,
+    tau0: jax.Array,
+    init_res_norm: jax.Array,
+    scan_res: Any,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Prepend initial point arrays to a `TrackScanResult`."""
+    return (
+        jnp.concatenate([state0[None, :], scan_res.u], axis=0),
+        jnp.concatenate([jnp.atleast_1d(p1_0), scan_res.p], axis=0),
+        jnp.concatenate([tau0[None, :], scan_res.tangents], axis=0),
+        jnp.concatenate([jnp.array([True]), scan_res.converged], axis=0),
+        jnp.concatenate([jnp.array([0], dtype=jnp.int32), scan_res.iterations], axis=0),
+        jnp.concatenate([jnp.atleast_1d(init_res_norm), scan_res.residual_norms], axis=0),
+    )
+
+
 def _fixed_period_residual(
     problem: CollocationProblem,
     fn_2p: Callable[..., jax.Array],
@@ -55,22 +100,16 @@ def _fixed_period_residual(
 ) -> jax.Array:
     """Evaluate fixed-period collocation BVP residual for X_2p = [u_mesh, u_gauss, p2]."""
     u_mesh, u_gauss, p2 = problem.unpack_vars(X_2p)
-    h = mesh[1:] - mesh[:-1]
-    U = jnp.concatenate([u_mesh[:, None, :], u_gauss], axis=1)
-
-    du_dt = jnp.einsum("mj,Njd->Nmd", problem.D, U) / h[:, None, None]
     f_val = jax.vmap(jax.vmap(lambda u_: fn_2p(u_, p1, p2, **kwargs)))(u_gauss)
-    res_coll = (du_dt - T_fixed * f_val).ravel()
-
-    u_next = jnp.roll(u_mesh, -1, axis=0)
-    if problem.period_shift is not None:
-        u_next = u_next.at[-1].add(problem.period_shift)
-    u_end_approx = jnp.einsum("j,Njd->Nd", problem.C, U)
-    res_cont = (u_next - u_end_approx).ravel()
-
-    inner_prod = jnp.sum(dot_u_ref * (u_gauss - u_ref_gauss), axis=-1)
-    phase_val = jnp.sum(h[:, None] * problem.weights[None, :] * inner_prod)
-    return jnp.concatenate([res_coll, res_cont, jnp.atleast_1d(phase_val)])
+    return problem._eval_residual_from_rhs(
+        u_mesh,
+        u_gauss,
+        T_fixed,
+        f_val,
+        mesh,
+        u_ref_gauss=u_ref_gauss,
+        dot_u_ref=dot_u_ref,
+    )
 
 
 def _make_fixed_period_bordered_solver(
@@ -158,17 +197,12 @@ def continue_fixed_period_2p(
 
     problem = initial_orbit.problem
     mesh = jnp.asarray(initial_orbit.mesh, dtype=jnp.float64)
-    h_seg = mesh[1:] - mesh[:-1]
     T_fixed = jnp.squeeze(jnp.asarray(initial_orbit.period, dtype=jnp.float64))
     p1_0 = jnp.squeeze(jnp.asarray(p1_init, dtype=jnp.float64))
     p2_0 = jnp.squeeze(jnp.asarray(p2_init, dtype=jnp.float64))
     X0 = problem.pack_vars(initial_orbit.u_mesh, initial_orbit.u_gauss, p2_0)
 
-    def chart_fn(X_ref: jax.Array, _p1: jax.Array) -> tuple[jax.Array, jax.Array]:
-        u_ref_m, u_ref_g, _ = problem.unpack_vars(X_ref)
-        U_ref = jnp.concatenate([u_ref_m[:, None, :], u_ref_g], axis=1)
-        dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_seg[:, None, None]
-        return dot_u_ref, u_ref_g
+    chart_fn = problem.make_phase_chart_fn(mesh)
 
     def res_fn(X_2p: jax.Array, p1_val: jax.Array, chart: tuple[jax.Array, jax.Array]) -> jax.Array:
         dot_u_ref, u_ref_g = chart
@@ -193,26 +227,7 @@ def continue_fixed_period_2p(
         bordered_solver=solver_factory(chart0),
     )
 
-    p1_min = (
-        jnp.array(-jnp.inf, dtype=jnp.float64)
-        if p1_bounds is None
-        else jnp.asarray(p1_bounds[0], dtype=jnp.float64)
-    )
-    p1_max = (
-        jnp.array(jnp.inf, dtype=jnp.float64)
-        if p1_bounds is None
-        else jnp.asarray(p1_bounds[1], dtype=jnp.float64)
-    )
-
-    if p2_bounds is not None:
-        p2_lo = jnp.asarray(p2_bounds[0], dtype=jnp.float64)
-        p2_hi = jnp.asarray(p2_bounds[1], dtype=jnp.float64)
-
-        def stop_fn(X_2p: jax.Array, _p1: jax.Array) -> jax.Array:
-            p2_v = jnp.squeeze(X_2p[-1])
-            return (p2_v < p2_lo) | (p2_v > p2_hi)
-    else:
-        stop_fn = None
+    p1_min, p1_max, stop_fn = _resolve_2p_bounds_and_stop(p1_bounds, p2_bounds)
 
     scan_res = track_arclength_scan(
         residual_fn=res_fn,
@@ -240,15 +255,10 @@ def continue_fixed_period_2p(
         bordered_solver=solver_factory,
     )
 
-    X_all = jnp.concatenate([X0[None, :], scan_res.u], axis=0)
-    u_mesh_all, u_gauss_all, p2_all = jax.vmap(problem.unpack_vars)(X_all)
-    p1_all = jnp.concatenate([jnp.atleast_1d(p1_0), scan_res.p], axis=0)
-    tangents_all = jnp.concatenate([tau0[None, :], scan_res.tangents], axis=0)
-    conv_all = jnp.concatenate([jnp.array([True]), scan_res.converged], axis=0)
-    iters_all = jnp.concatenate([jnp.array([0], dtype=jnp.int32), scan_res.iterations], axis=0)
-    res_all = jnp.concatenate(
-        [jnp.atleast_1d(initial_orbit.residual_norm), scan_res.residual_norms], axis=0
+    X_all, p1_all, tangents_all, conv_all, iters_all, res_all = _prepend_initial_scan_point(
+        X0, p1_0, tau0, initial_orbit.residual_norm, scan_res
     )
+    u_mesh_all, u_gauss_all, p2_all = jax.vmap(problem.unpack_vars)(X_all)
 
     return FixedPeriodContinuationResult(
         p1=p1_all,
@@ -405,17 +415,15 @@ def continue_periodic_bifurcation_2p(
     )
 
     mesh = jnp.asarray(initial_orbit.mesh, dtype=jnp.float64)
-    h_seg = mesh[1:] - mesh[:-1]
     p1_0 = jnp.squeeze(jnp.asarray(p1_init, dtype=jnp.float64))
     p2_0 = jnp.squeeze(jnp.asarray(p2_init, dtype=jnp.float64))
     X0 = problem.pack_vars(initial_orbit.u_mesh, initial_orbit.u_gauss, initial_orbit.period)
     Z0 = jnp.concatenate([X0, jnp.atleast_1d(p2_0)])
 
-    def chart_fn(Z_ref: jax.Array, _p1: jax.Array) -> tuple[jax.Array, jax.Array]:
-        u_ref_m, u_ref_g, _ = problem.unpack_vars(Z_ref[:-1])
-        U_ref = jnp.concatenate([u_ref_m[:, None, :], u_ref_g], axis=1)
-        dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_seg[:, None, None]
-        return dot_u_ref, u_ref_g
+    _base_chart = problem.make_phase_chart_fn(mesh)
+
+    def chart_fn(Z_ref: jax.Array, p1_v: jax.Array) -> tuple[jax.Array, jax.Array]:
+        return _base_chart(Z_ref[:-1], p1_v)
 
     chart0 = chart_fn(Z0, p1_0)
     A0 = _periodic_bif_matrix(problem, fn_2p, X0, p1_0, p2_0, mesh, chart0[0], btype, kwargs)
@@ -452,26 +460,7 @@ def continue_periodic_bifurcation_2p(
         param_mode="arclength",
     )
 
-    p1_min = (
-        jnp.array(-jnp.inf, dtype=jnp.float64)
-        if p1_bounds is None
-        else jnp.asarray(p1_bounds[0], dtype=jnp.float64)
-    )
-    p1_max = (
-        jnp.array(jnp.inf, dtype=jnp.float64)
-        if p1_bounds is None
-        else jnp.asarray(p1_bounds[1], dtype=jnp.float64)
-    )
-
-    if p2_bounds is not None:
-        p2_lo = jnp.asarray(p2_bounds[0], dtype=jnp.float64)
-        p2_hi = jnp.asarray(p2_bounds[1], dtype=jnp.float64)
-
-        def stop_fn(Z_v: jax.Array, _p1: jax.Array) -> jax.Array:
-            p2_v = Z_v[-1]
-            return (p2_v < p2_lo) | (p2_v > p2_hi)
-    else:
-        stop_fn = None
+    p1_min, p1_max, stop_fn = _resolve_2p_bounds_and_stop(p1_bounds, p2_bounds)
 
     scan_res = track_arclength_scan(
         residual_fn=res_fn,
@@ -499,16 +488,11 @@ def continue_periodic_bifurcation_2p(
         norm_options=opts.norm,
     )
 
-    Z_all = jnp.concatenate([Z0[None, :], scan_res.u], axis=0)
+    Z_all, p1_all, tangents_all, conv_all, iters_all, res_all = _prepend_initial_scan_point(
+        Z0, p1_0, tau0, initial_orbit.residual_norm, scan_res
+    )
     u_mesh_all, u_gauss_all, T_all = jax.vmap(problem.unpack_vars)(Z_all[:, :-1])
     p2_all = Z_all[:, -1]
-    p1_all = jnp.concatenate([jnp.atleast_1d(p1_0), scan_res.p], axis=0)
-    tangents_all = jnp.concatenate([tau0[None, :], scan_res.tangents], axis=0)
-    conv_all = jnp.concatenate([jnp.array([True]), scan_res.converged], axis=0)
-    iters_all = jnp.concatenate([jnp.array([0], dtype=jnp.int32), scan_res.iterations], axis=0)
-    res_all = jnp.concatenate(
-        [jnp.atleast_1d(initial_orbit.residual_norm), scan_res.residual_norms], axis=0
-    )
 
     return PeriodicCodim2Result(
         p1=p1_all,
