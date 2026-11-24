@@ -469,7 +469,6 @@ def branch_from_hopf(
         ds=ds_val,
         tol=tol_val,
         step_tol=tol_val,
-        rel_tol=min(tol_val, 1e-10),
         max_iters=max_iters_val,
         border_c=w_arc[:-1] * tau0[:-1],
         border_d=w_arc[-1] * tau0[-1],
@@ -712,7 +711,6 @@ def continue_periodic_orbit(
         if tol is not None
         else (coll_opts.tol if has_coll else (cont_opts.newton.tol if has_cont else 1e-7))
     )
-    rel_tol_val = float(cont_opts.newton.rel_tol if has_cont else min(tol_val, 1e-10))
     max_iters_val = int(
         max_iters
         if max_iters is not None
@@ -930,7 +928,6 @@ def continue_periodic_orbit(
             stop_fn=stop_fn,
             tol=tol_val,
             step_tol=tol_val,
-            rel_tol=rel_tol_val,
             max_newton_iters=max_iters_val,
             solver_method=cont_opts.newton.solver_method,
             tracker_params=cont_opts.tracker,

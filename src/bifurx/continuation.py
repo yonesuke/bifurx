@@ -38,7 +38,6 @@ def bordered_newton_solve(
     ds: float | jax.Array,
     tol: float | None = None,
     step_tol: float | None = None,
-    rel_tol: float | None = None,
     max_iters: int | None = None,
     solver_method: str | None = None,
     options: NewtonOptions | None = None,
@@ -47,14 +46,6 @@ def bordered_newton_solve(
     base_opts = NewtonOptions() if options is None else options
     tol_val = base_opts.tol if tol is None else tol
     step_tol_val = base_opts.step_tol if step_tol is None else step_tol
-    if rel_tol is not None:
-        rel_tol_val = rel_tol
-    elif options is not None:
-        rel_tol_val = base_opts.rel_tol
-    elif tol is not None:
-        rel_tol_val = tol_val
-    else:
-        rel_tol_val = base_opts.rel_tol
     max_iters_val = base_opts.max_iters if max_iters is None else max_iters
     solver_method_val = base_opts.solver_method if solver_method is None else solver_method
 
@@ -70,7 +61,6 @@ def bordered_newton_solve(
         ds=ds,
         tol=tol_val,
         step_tol=step_tol_val,
-        rel_tol=rel_tol_val,
         max_iters=max_iters_val,
         solver_method=solver_method_val,
     )
@@ -184,7 +174,6 @@ def continuation_scan(
     n_steps: int | None = None,
     newton_tol: float | None = None,
     newton_step_tol: float | None = None,
-    newton_rel_tol: float | None = None,
     newton_max_iters: int | None = None,
     param_bounds: tuple[float, float] | jax.Array | None = None,
     adaptive_step: bool | None = None,
@@ -210,7 +199,6 @@ def continuation_scan(
         bif_u_tol=bif_u_tol,
         newton_tol=newton_tol,
         newton_step_tol=newton_step_tol,
-        newton_rel_tol=newton_rel_tol,
         newton_max_iters=newton_max_iters,
         solver_method=solver_method,
     )
@@ -239,7 +227,6 @@ def continuation_scan(
         predictor=opts.predictor,
         tol=opts.newton.tol,
         step_tol=opts.newton.step_tol,
-        rel_tol=opts.newton.rel_tol,
         max_newton_iters=opts.newton.max_iters,
         solver_method=opts.newton.solver_method,
         tracker_params=opts.tracker,
@@ -273,7 +260,6 @@ def continuation(
     max_steps: int | None = None,
     newton_tol: float | None = None,
     newton_step_tol: float | None = None,
-    newton_rel_tol: float | None = None,
     newton_max_iters: int | None = None,
     detect_bifurcations: bool | None = None,
     param_bounds: tuple[float, float] | None = None,
@@ -302,7 +288,6 @@ def continuation(
         bif_u_tol=bif_u_tol,
         newton_tol=newton_tol,
         newton_step_tol=newton_step_tol,
-        newton_rel_tol=newton_rel_tol,
         newton_max_iters=newton_max_iters,
         extra_kwargs=kwargs,
     )

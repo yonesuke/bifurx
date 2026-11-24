@@ -200,7 +200,6 @@ def correct_arclength_step(
     first_step: bool | jax.Array = True,
     tol: float = 1e-8,
     step_tol: float = 1e-8,
-    rel_tol: float = 1e-8,
     max_iters: int = 15,
     solver_method: str = "auto",
     contraction_a: float = 0.125,
@@ -213,8 +212,8 @@ def correct_arclength_step(
     """Solve bordered arclength Newton system with optional contraction-rate early abort.
 
     Solves `residual_fn(u, p) = 0` and `<c, u - u_prev> + d * (p - p_prev) - ds = 0`, where
-    `(c, d)` defaults to `(tau_prev[:n], tau_prev[-1])`. Note that `rel_tol` is retained for
-    API compatibility; domain-space Kantorovich stopping is governed by `tol` and `step_tol`.
+    `(c, d)` defaults to `(tau_prev[:n], tau_prev[-1])`. Domain-space Kantorovich stopping is
+    governed by `tol` and `step_tol`.
     """
     if u_init is None or u_prev is None or tau_prev is None:
         msg = "u_init, u_prev, and tau_prev must be provided."
@@ -222,7 +221,6 @@ def correct_arclength_step(
     if bordered_solver is None and (jac_u_fn is None or jac_p_fn is None):
         msg = "Provide jac_u_fn and jac_p_fn when bordered_solver is None."
         raise ValueError(msg)
-    del rel_tol
 
     n = u_init.shape[0]
     u_0 = jnp.asarray(u_init, dtype=jnp.float64)

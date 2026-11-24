@@ -270,7 +270,6 @@ def continuation_codim2(
         predictor=opts.predictor,
         tol=opts.newton.tol,
         step_tol=opts.newton.step_tol,
-        rel_tol=opts.newton.rel_tol,
         max_newton_iters=opts.newton.max_iters,
         solver_method=opts.newton.solver_method,
         tracker_params=opts.tracker,

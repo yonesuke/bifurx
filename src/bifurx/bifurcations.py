@@ -664,7 +664,6 @@ def switch_branch(
         tau_prev=tau_target,
         ds=ds_arr,
         tol=tol,
-        rel_tol=tol,
         max_iters=max_iters,
     )
 
