@@ -4,10 +4,14 @@ import jax
 import jax.numpy as jnp
 
 from bifurx.bvp.collocation import (
+    CollocationProblem,
     PeriodicOrbitResult,
     periodic_orbit_arclength_weights,
 )
-from bifurx.bvp.condensation import make_collocation_bordered_solver
+from bifurx.bvp.condensation import (
+    factor_condensed_collocation,
+    make_collocation_bordered_solver,
+)
 from bifurx.bvp.floquet import (
     evaluate_floquet_diagnostics_from_factors,
     monodromy_factors_condensation,
@@ -233,4 +237,145 @@ def refine_periodic_bifurcation(
         floquet_multipliers=mults_fin,
         is_stable=stable_fin,
         bifurcations=(btype,),
+    )
+
+
+def branch_from_period_doubling(
+    pd_orbit: PeriodicOrbitResult,
+    *,
+    ds: float | jax.Array = 0.1,
+    period_weight: float = 1.0,
+    param_weight: float = 1.0,
+    tol: float = 1e-8,
+    max_iters: int = 20,
+    compute_floquet: bool = True,
+) -> PeriodicOrbitResult:
+    """Switch from a period-doubling (PD) point onto the period-2 branch in pure JAX.
+
+    Implements AUTO-07P's `IPS=2, IRS=PD, ISW=-1` branch-switching algorithm:
+    doubles the mesh (`2N` intervals) and period (`2T`), constructs the anti-periodic
+    Floquet eigenfunction for multiplier `-1` directly from the condensed collocation
+    factors, and solves jointly for `(u(t), T, p)` via bordered pseudo-arclength Newton.
+    Because the anti-periodic tangent is orthogonal to the period-1 subspace, Newton
+    cannot collapse back onto the original period-1 branch and automatically steps to
+    the correct side of `p_PD` (supercritical or subcritical).
+    """
+    if pd_orbit.p is None:
+        msg = "pd_orbit must have a non-None parameter value `p`."
+        raise ValueError(msg)
+
+    problem = pd_orbit.problem
+    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
+    mesh = jnp.asarray(pd_orbit.mesh, dtype=jnp.float64)
+    h_1 = mesh[1:] - mesh[:-1]
+    u_m = jnp.asarray(pd_orbit.u_mesh, dtype=jnp.float64)
+    u_g = jnp.asarray(pd_orbit.u_gauss, dtype=jnp.float64)
+    T_1 = jnp.squeeze(jnp.asarray(pd_orbit.period, dtype=jnp.float64))
+    p_pd = jnp.squeeze(jnp.asarray(pd_orbit.p, dtype=jnp.float64))
+    ds_val = jnp.squeeze(jnp.asarray(ds, dtype=jnp.float64))
+
+    # 1. Extract condensed interval maps K_all and M_k from the period-1 orbit
+    U_1 = jnp.concatenate([u_m[:, None, :], u_g], axis=1)
+    dot_u_1 = jnp.einsum("mj,Njd->Nmd", problem.D, U_1) / h_1[:, None, None]
+    X_1 = problem.pack_vars(u_m, u_g, T_1)
+    fac_1 = factor_condensed_collocation(problem, X_1, p_pd, mesh, dot_u_1)
+
+    C = jnp.asarray(problem.C, dtype=jnp.float64)
+    eye_n = jnp.eye(n, dtype=jnp.float64)
+    K_reshaped = fac_1.K_all.reshape(N, m, n, n)
+    M_k = C[0] * eye_n[None, :, :] - jnp.einsum("j,Njab->Nab", C[1:], K_reshaped)
+
+    # Monodromy M = M_{N-1} @ ... @ M_0 and real null vector of (M + I) for mu = -1
+    M_total, _ = jax.lax.scan(lambda acc, mk: (mk @ acc, None), eye_n, M_k)
+    _, _, vh = jnp.linalg.svd(M_total + eye_n)
+    v0 = vh[-1, :]
+
+    def _prop_v(v_cur: jax.Array, mk: jax.Array) -> tuple[jax.Array, jax.Array]:
+        return mk @ v_cur, v_cur
+
+    _, v_mesh_half = jax.lax.scan(_prop_v, v0, M_k)
+    v_gauss_half = -jnp.einsum("Nia,Na->Ni", fac_1.K_all, v_mesh_half).reshape(N, m, n)
+
+    # 2. Construct doubled-period (2N intervals, period 2T) problem and anti-periodic tangent
+    shift_2 = None if problem.period_shift is None else 2.0 * problem.period_shift
+    prob_2 = CollocationProblem(
+        fn=problem.fn,
+        dim=n,
+        num_intervals=2 * N,
+        num_gauss_points=m,
+        period_shift=shift_2,
+        **problem.kwargs,
+    )
+    mesh_2 = jnp.concatenate([0.5 * mesh[:-1], 0.5 + 0.5 * mesh], axis=0)
+    h_2 = mesh_2[1:] - mesh_2[:-1]
+
+    if problem.period_shift is not None:
+        u_m_second = u_m + problem.period_shift[None, :]
+        u_g_second = u_g + problem.period_shift[None, None, :]
+    else:
+        u_m_second = u_m
+        u_g_second = u_g
+
+    u_m_2 = jnp.concatenate([u_m, u_m_second], axis=0)
+    u_g_2 = jnp.concatenate([u_g, u_g_second], axis=0)
+    T_2 = 2.0 * T_1
+    X_base = prob_2.pack_vars(u_m_2, u_g_2, T_2)
+
+    v_m_2 = jnp.concatenate([v_mesh_half, -v_mesh_half], axis=0)
+    v_g_2 = jnp.concatenate([v_gauss_half, -v_gauss_half], axis=0)
+    tau_X_raw = prob_2.pack_vars(v_m_2, v_g_2, 0.0)
+    tau_raw = jnp.concatenate([tau_X_raw, jnp.zeros(1, dtype=jnp.float64)])
+
+    w_arc_2 = periodic_orbit_arclength_weights(
+        prob_2, mesh_2, period_weight=period_weight, param_weight=param_weight
+    )
+    tau_norm = jnp.sqrt(jnp.maximum(jnp.dot(w_arc_2 * tau_raw, tau_raw), 1e-30))
+    tau0 = tau_raw / tau_norm
+
+    U_ref_2 = jnp.concatenate([u_m_2[:, None, :], u_g_2], axis=1)
+    dot_u_ref_2 = jnp.einsum("mj,Njd->Nmd", prob_2.D, U_ref_2) / h_2[:, None, None]
+    bordered_solver_2 = make_collocation_bordered_solver(prob_2, mesh_2, dot_u_ref_2)
+
+    def _res_fn_2(X_v: jax.Array, p_v: jax.Array) -> jax.Array:
+        return prob_2.residual(X_v, p_v, mesh_2, u_ref_gauss=u_g_2, dot_u_ref=dot_u_ref_2)
+
+    X_pred = X_base + ds_val * tau0[:-1]
+    res = correct_arclength_step(
+        residual_fn=_res_fn_2,
+        u_init=X_pred,
+        p_init=p_pd,
+        u_prev=X_base,
+        p_prev=p_pd,
+        tau_prev=tau0,
+        ds=ds_val,
+        tol=tol,
+        step_tol=tol,
+        rel_tol=min(tol, 1e-10),
+        max_iters=max_iters,
+        border_c=w_arc_2[:-1] * tau0[:-1],
+        border_d=w_arc_2[-1] * tau0[-1],
+        bordered_solver=bordered_solver_2,
+    )
+
+    u_m_sol, u_g_sol, T_sol = prob_2.unpack_vars(res.u)
+    conv = res.converged & jnp.isfinite(T_sol) & (T_sol > 0.0)
+
+    if compute_floquet:
+        factors_2 = monodromy_factors_condensation(prob_2, mesh_2, u_g_sol, T_sol, p=res.p)
+        mults_2, _, stable_2 = evaluate_floquet_diagnostics_from_factors(factors_2)
+    else:
+        mults_2, stable_2 = None, None
+
+    return PeriodicOrbitResult(
+        mesh=mesh_2,
+        u_mesh=u_m_sol,
+        u_gauss=u_g_sol,
+        period=T_sol,
+        converged=conv,
+        iterations=res.iterations,
+        residual_norm=res.residual_norm,
+        problem=prob_2,
+        p=res.p,
+        floquet_multipliers=mults_2,
+        is_stable=stable_2,
     )

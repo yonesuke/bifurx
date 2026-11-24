@@ -27,7 +27,10 @@ from bifurx.bvp.floquet import (
     periodic_schur_eigenvalues,
 )
 from bifurx.bvp.mesh import redistribute_mesh
-from bifurx.bvp.periodic_bifurcations import refine_periodic_bifurcation
+from bifurx.bvp.periodic_bifurcations import (
+    branch_from_period_doubling,
+    refine_periodic_bifurcation,
+)
 from bifurx.bvp.periodic_codim2 import (
     FixedPeriodContinuationResult,
     continue_fixed_period_2p,
@@ -39,6 +42,7 @@ __all__ = [
     "FixedPeriodContinuationResult",
     "PeriodicOrbitResult",
     "branch_from_hopf",
+    "branch_from_period_doubling",
     "collocation_matrices",
     "compute_floquet_exponents",
     "compute_floquet_multipliers",

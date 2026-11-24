@@ -33,7 +33,10 @@ from bifurx.bvp.collocation import (
 )
 from bifurx.bvp.floquet import compute_floquet_multipliers
 from bifurx.bvp.mesh import redistribute_mesh
-from bifurx.bvp.periodic_bifurcations import refine_periodic_bifurcation
+from bifurx.bvp.periodic_bifurcations import (
+    branch_from_period_doubling,
+    refine_periodic_bifurcation,
+)
 from bifurx.bvp.periodic_codim2 import (
     FixedPeriodContinuationResult,
     continue_fixed_period_2p,
@@ -97,6 +100,7 @@ __all__ = [
     "WeightedNormOptions",
     "bordered_newton_solve",
     "branch_from_hopf",
+    "branch_from_period_doubling",
     "collocation_matrices",
     "compute_first_lyapunov_coefficient",
     "compute_floquet_multipliers",
