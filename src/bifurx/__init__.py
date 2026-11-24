@@ -33,6 +33,10 @@ from bifurx.bvp.collocation import (
 )
 from bifurx.bvp.floquet import compute_floquet_multipliers
 from bifurx.bvp.mesh import redistribute_mesh
+from bifurx.bvp.periodic_codim2 import (
+    FixedPeriodContinuationResult,
+    continue_fixed_period_2p,
+)
 from bifurx.codim2 import (
     Codim2Point,
     Codim2Result,
@@ -82,6 +86,7 @@ __all__ = [
     "ContinuationOptions",
     "ContinuationResult",
     "ContinuationScanResult",
+    "FixedPeriodContinuationResult",
     "IPRCContinuationResult",
     "IPRCResult",
     "NewtonOptions",
@@ -96,6 +101,7 @@ __all__ = [
     "compute_floquet_multipliers",
     "compute_initial_tangent",
     "compute_iprc",
+    "continue_fixed_period_2p",
     "continue_periodic_orbit",
     "continuation",
     "continuation_codim2",
