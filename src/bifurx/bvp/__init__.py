@@ -27,15 +27,21 @@ from bifurx.bvp.floquet import (
     periodic_schur_eigenvalues,
 )
 from bifurx.bvp.mesh import redistribute_mesh
+from bifurx.bvp.periodic_codim2 import (
+    FixedPeriodContinuationResult,
+    continue_fixed_period_2p,
+)
 
 __all__ = [
     "CollocationProblem",
     "CondensedCollocationFactor",
+    "FixedPeriodContinuationResult",
     "PeriodicOrbitResult",
     "branch_from_hopf",
     "collocation_matrices",
     "compute_floquet_exponents",
     "compute_floquet_multipliers",
+    "continue_fixed_period_2p",
     "continue_periodic_orbit",
     "evaluate_floquet_diagnostics",
     "evaluate_floquet_diagnostics_from_factors",

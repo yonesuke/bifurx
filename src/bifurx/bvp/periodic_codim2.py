@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any, NamedTuple
+
+import jax
+import jax.numpy as jnp
+
+from bifurx.bvp.collocation import (
+    CollocationProblem,
+    PeriodicOrbitResult,
+    periodic_orbit_arclength_weights,
+)
+from bifurx.bvp.condensation import (
+    CondensedCollocationFactor,
+    _condense_collocation_blocks,
+    solve_condensed_bordered,
+)
+from bifurx.homotopy import BorderedOperatorSolver, compute_tangent, track_arclength_scan
+from bifurx.options import ContinuationOptions, resolve_continuation_options
+
+
+class FixedPeriodContinuationResult(NamedTuple):
+    """Pure-JAX result of 2-parameter fixed-period periodic orbit continuation.
+
+    Tracks a curve `(u(t), p1, p2)` at fixed period `T` (isoperiodic / homoclinic
+    approximation curve in AUTO-07P). All fields are JAX arrays with no host sync.
+    """
+
+    p1: jax.Array  # shape (n_steps + 1,)
+    p2: jax.Array  # shape (n_steps + 1,)
+    u_mesh: jax.Array  # shape (n_steps + 1, N, dim)
+    u_gauss: jax.Array  # shape (n_steps + 1, N, m, dim)
+    mesh: jax.Array  # shape (N + 1,)
+    period: jax.Array  # scalar fixed period T
+    tangents: jax.Array  # shape (n_steps + 1, dim_X + 1)
+    converged: jax.Array  # shape (n_steps + 1,) bool
+    iterations: jax.Array  # shape (n_steps + 1,) int32
+    residual_norms: jax.Array  # shape (n_steps + 1,) float64
+
+
+def _fixed_period_residual(
+    problem: CollocationProblem,
+    fn_2p: Callable[..., jax.Array],
+    X_2p: jax.Array,
+    p1: jax.Array,
+    T_fixed: jax.Array,
+    mesh: jax.Array,
+    dot_u_ref: jax.Array,
+    u_ref_gauss: jax.Array,
+    kwargs: dict[str, Any],
+) -> jax.Array:
+    """Evaluate fixed-period collocation BVP residual for X_2p = [u_mesh, u_gauss, p2]."""
+    u_mesh, u_gauss, p2 = problem.unpack_vars(X_2p)
+    h = mesh[1:] - mesh[:-1]
+    U = jnp.concatenate([u_mesh[:, None, :], u_gauss], axis=1)
+
+    du_dt = jnp.einsum("mj,Njd->Nmd", problem.D, U) / h[:, None, None]
+    f_val = jax.vmap(jax.vmap(lambda u_: fn_2p(u_, p1, p2, **kwargs)))(u_gauss)
+    res_coll = (du_dt - T_fixed * f_val).ravel()
+
+    u_next = jnp.roll(u_mesh, -1, axis=0)
+    if problem.period_shift is not None:
+        u_next = u_next.at[-1].add(problem.period_shift)
+    u_end_approx = jnp.einsum("j,Njd->Nd", problem.C, U)
+    res_cont = (u_next - u_end_approx).ravel()
+
+    inner_prod = jnp.sum(dot_u_ref * (u_gauss - u_ref_gauss), axis=-1)
+    phase_val = jnp.sum(h[:, None] * problem.weights[None, :] * inner_prod)
+    return jnp.concatenate([res_coll, res_cont, jnp.atleast_1d(phase_val)])
+
+
+def _make_fixed_period_bordered_solver(
+    problem: CollocationProblem,
+    fn_2p: Callable[..., jax.Array],
+    T_fixed: jax.Array,
+    mesh: jax.Array,
+    dot_u_ref: jax.Array,
+    kwargs: dict[str, Any],
+) -> BorderedOperatorSolver:
+    """Build O(N n^3) block-condensed bordered solver for fixed-period 2-parameter BVP."""
+
+    def factor(
+        X_2p: jax.Array, p1: jax.Array, c: jax.Array, d: jax.Array
+    ) -> CondensedCollocationFactor:
+        _, u_gauss, p2 = problem.unpack_vars(X_2p)
+        Ju_all = jax.vmap(jax.vmap(jax.jacfwd(lambda u_: fn_2p(u_, p1, p2, **kwargs))))(u_gauss)
+        Jp2_all = jax.vmap(
+            jax.vmap(lambda u_: jax.jacfwd(lambda p2_: fn_2p(u_, p1, p2_, **kwargs))(p2))
+        )(u_gauss)
+        Jp1_all = jax.vmap(
+            jax.vmap(lambda u_: jax.jacfwd(lambda p1_: fn_2p(u_, p1_, p2, **kwargs))(p1))
+        )(u_gauss)
+        return _condense_collocation_blocks(
+            problem,
+            T=T_fixed,
+            mesh=mesh,
+            dot_u_ref=dot_u_ref,
+            Ju_all=Ju_all,
+            q_scalar=-T_fixed * Jp2_all,
+            q_param=-T_fixed * Jp1_all,
+            c_X=c,
+            d_p=d,
+        )
+
+    def solve(fac: CondensedCollocationFactor, f: jax.Array, g: jax.Array) -> Any:
+        return solve_condensed_bordered(fac, f, g)
+
+    return BorderedOperatorSolver(factor=factor, solve=solve)
+
+
+def continue_fixed_period_2p(
+    fn_2p: Callable[..., jax.Array],
+    initial_orbit: PeriodicOrbitResult,
+    p1_init: float | jax.Array,
+    p2_init: float | jax.Array,
+    *,
+    p1_bounds: tuple[float, float] | None = None,
+    p2_bounds: tuple[float, float] | None = None,
+    ds: float | jax.Array | None = None,
+    ds_min: float | jax.Array | None = None,
+    ds_max: float | jax.Array | None = None,
+    max_steps: int | None = None,
+    direction: float | jax.Array | None = None,
+    p1_weight: float = 1.0,
+    p2_weight: float = 1.0,
+    adaptive_step: bool | None = None,
+    predictor: str | None = None,
+    tol: float | None = None,
+    max_newton_iters: int | None = None,
+    options: ContinuationOptions | None = None,
+    **kwargs: Any,
+) -> FixedPeriodContinuationResult:
+    """Continue a periodic orbit in two parameters `(p1, p2)` at fixed period `T` in pure JAX.
+
+    Implements the AUTO-07P fixed-large-period continuation method for tracing isoperiodic
+    and approximate homoclinic (HC) curves in two parameters. Uses de Boor-Swartz block
+    condensation and `jax.lax.scan` with zero Python host synchronization.
+    """
+    opts = resolve_continuation_options(
+        options,
+        default_options=ContinuationOptions(
+            ds=0.02, ds_min=1e-5, ds_max=0.1, max_steps=100, adaptive_step=True
+        ),
+        ds=ds,
+        ds_min=ds_min,
+        ds_max=ds_max,
+        max_steps=max_steps,
+        direction=direction,
+        adaptive_step=adaptive_step,
+        predictor=predictor,
+        newton_tol=tol,
+        newton_max_iters=max_newton_iters,
+    )
+
+    problem = initial_orbit.problem
+    mesh = jnp.asarray(initial_orbit.mesh, dtype=jnp.float64)
+    h_seg = mesh[1:] - mesh[:-1]
+    T_fixed = jnp.squeeze(jnp.asarray(initial_orbit.period, dtype=jnp.float64))
+    p1_0 = jnp.squeeze(jnp.asarray(p1_init, dtype=jnp.float64))
+    p2_0 = jnp.squeeze(jnp.asarray(p2_init, dtype=jnp.float64))
+    X0 = problem.pack_vars(initial_orbit.u_mesh, initial_orbit.u_gauss, p2_0)
+
+    def chart_fn(X_ref: jax.Array, _p1: jax.Array) -> tuple[jax.Array, jax.Array]:
+        u_ref_m, u_ref_g, _ = problem.unpack_vars(X_ref)
+        U_ref = jnp.concatenate([u_ref_m[:, None, :], u_ref_g], axis=1)
+        dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_seg[:, None, None]
+        return dot_u_ref, u_ref_g
+
+    def res_fn(X_2p: jax.Array, p1_val: jax.Array, chart: tuple[jax.Array, jax.Array]) -> jax.Array:
+        dot_u_ref, u_ref_g = chart
+        return _fixed_period_residual(
+            problem, fn_2p, X_2p, p1_val, T_fixed, mesh, dot_u_ref, u_ref_g, kwargs
+        )
+
+    def solver_factory(chart: tuple[jax.Array, jax.Array]) -> BorderedOperatorSolver:
+        dot_u_ref, _ = chart
+        return _make_fixed_period_bordered_solver(problem, fn_2p, T_fixed, mesh, dot_u_ref, kwargs)
+
+    w_arc = periodic_orbit_arclength_weights(
+        problem, mesh, period_weight=p2_weight, param_weight=p1_weight
+    )
+    chart0 = chart_fn(X0, p1_0)
+    tau0 = compute_tangent(
+        u0=X0,
+        p0=p1_0,
+        direction=opts.direction,
+        arclength_weights=w_arc,
+        param_mode="arclength",
+        bordered_solver=solver_factory(chart0),
+    )
+
+    p1_min = (
+        jnp.array(-jnp.inf, dtype=jnp.float64)
+        if p1_bounds is None
+        else jnp.asarray(p1_bounds[0], dtype=jnp.float64)
+    )
+    p1_max = (
+        jnp.array(jnp.inf, dtype=jnp.float64)
+        if p1_bounds is None
+        else jnp.asarray(p1_bounds[1], dtype=jnp.float64)
+    )
+
+    if p2_bounds is not None:
+        p2_lo = jnp.asarray(p2_bounds[0], dtype=jnp.float64)
+        p2_hi = jnp.asarray(p2_bounds[1], dtype=jnp.float64)
+
+        def stop_fn(X_2p: jax.Array, _p1: jax.Array) -> jax.Array:
+            p2_v = jnp.squeeze(X_2p[-1])
+            return (p2_v < p2_lo) | (p2_v > p2_hi)
+    else:
+        stop_fn = None
+
+    scan_res = track_arclength_scan(
+        residual_fn=res_fn,
+        u0=X0,
+        p0=p1_0,
+        tau0=tau0,
+        ds=opts.ds,
+        ds_min=opts.ds_min,
+        ds_max=opts.ds_max,
+        n_steps=int(opts.max_steps),
+        p_min=p1_min,
+        p_max=p1_max,
+        adaptive_step=bool(opts.adaptive_step),
+        predictor=opts.predictor,
+        param_mode="arclength",
+        arclength_weights=w_arc,
+        chart_fn=chart_fn,
+        stop_fn=stop_fn,
+        tol=opts.newton.tol,
+        step_tol=opts.newton.step_tol,
+        rel_tol=opts.newton.rel_tol,
+        max_newton_iters=opts.newton.max_iters,
+        solver_method=opts.newton.solver_method,
+        tracker_params=opts.tracker,
+        norm_options=opts.norm,
+        bordered_solver=solver_factory,
+    )
+
+    X_all = jnp.concatenate([X0[None, :], scan_res.u], axis=0)
+    u_mesh_all, u_gauss_all, p2_all = jax.vmap(problem.unpack_vars)(X_all)
+    p1_all = jnp.concatenate([jnp.atleast_1d(p1_0), scan_res.p], axis=0)
+    tangents_all = jnp.concatenate([tau0[None, :], scan_res.tangents], axis=0)
+    conv_all = jnp.concatenate([jnp.array([True]), scan_res.converged], axis=0)
+    iters_all = jnp.concatenate([jnp.array([0], dtype=jnp.int32), scan_res.iterations], axis=0)
+    res_all = jnp.concatenate(
+        [jnp.atleast_1d(initial_orbit.residual_norm), scan_res.residual_norms], axis=0
+    )
+
+    return FixedPeriodContinuationResult(
+        p1=p1_all,
+        p2=p2_all,
+        u_mesh=u_mesh_all,
+        u_gauss=u_gauss_all,
+        mesh=mesh,
+        period=T_fixed,
+        tangents=tangents_all,
+        converged=conv_all,
+        iterations=iters_all,
+        residual_norms=res_all,
+    )

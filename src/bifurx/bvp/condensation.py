@@ -201,34 +201,28 @@ class CondensedCollocationFactor(NamedTuple):
     cyclic: CyclicBlockBidiagonalFactor
 
 
-def factor_condensed_collocation(
+def _condense_collocation_blocks(
     problem: CollocationProblem,
-    X: jax.Array,
-    p: float | jax.Array,
+    T: jax.Array,
     mesh: jax.Array,
     dot_u_ref: jax.Array,
+    Ju_all: jax.Array,
+    q_scalar: jax.Array,
     *,
+    q_param: jax.Array | None = None,
     c_X: jax.Array | None = None,
     d_p: float | jax.Array | None = None,
     rcond: float = 1e-12,
 ) -> CondensedCollocationFactor:
-    """Factorize collocation BVP Jacobian (square or bordered) via block condensation."""
-    _, u_gauss, T = problem.unpack_vars(X)
+    """Shared de Boor-Swartz block condensation for 1-parameter and fixed-period 2-parameter BVPs."""
     mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
     h = mesh_arr[1:] - mesh_arr[:-1]
-    p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
-
     N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
     D = jnp.asarray(problem.D, dtype=jnp.float64)
     C = jnp.asarray(problem.C, dtype=jnp.float64)
     weights = jnp.asarray(problem.weights, dtype=jnp.float64)
     eye_n = jnp.eye(n, dtype=jnp.float64)
     eye_m = jnp.eye(m, dtype=jnp.float64)
-
-    f_all = jax.vmap(jax.vmap(lambda u_: problem.fn(u_, p_val, **problem.kwargs)))(u_gauss)
-    Ju_all = jax.vmap(jax.vmap(jax.jacfwd(lambda u_: problem.fn(u_, p_val, **problem.kwargs))))(
-        u_gauss
-    )
 
     A_blocks = (D[None, :, 1:] / h[:, None, None])[:, :, :, None, None] * eye_n[
         None, None, None, :, :
@@ -237,14 +231,14 @@ def factor_condensed_collocation(
     B_all = ((D[None, :, 0] / h[:, None])[:, :, None, None] * eye_n[None, None, :, :]).reshape(
         N, m * n, n
     )
-    q_T = (-f_all).reshape(N, m * n)
+    q_sc = q_scalar.reshape(N, m * n)
 
     lu_A, piv_A = jax.vmap(jax.scipy.linalg.lu_factor)(A_all)
     K_all = jax.vmap(lambda lu_k, piv_k, b_k: jax.scipy.linalg.lu_solve((lu_k, piv_k), b_k))(
         lu_A, piv_A, B_all
     )
     gamma_T = jax.vmap(lambda lu_k, piv_k, q_k: jax.scipy.linalg.lu_solve((lu_k, piv_k), q_k))(
-        lu_A, piv_A, q_T
+        lu_A, piv_A, q_sc
     )
 
     M_k = C[0] * eye_n[None, :, :] - jnp.einsum("j,Njab->Nab", C[1:], K_all.reshape(N, m, n, n))
@@ -254,11 +248,8 @@ def factor_condensed_collocation(
     phase_u = -jnp.einsum("Ni,Nia->Na", phi, K_all)
     phase_T = -jnp.sum(phi * gamma_T)
 
-    if c_X is not None:
-        Jp_all = jax.vmap(
-            jax.vmap(lambda u_: jax.jacfwd(lambda p_: problem.fn(u_, p_, **problem.kwargs))(p_val))
-        )(u_gauss)
-        q_p = (-T * Jp_all).reshape(N, m * n)
+    if c_X is not None and q_param is not None:
+        q_p = q_param.reshape(N, m * n)
         gamma_p = jax.vmap(lambda lu_k, piv_k, q_k: jax.scipy.linalg.lu_solve((lu_k, piv_k), q_k))(
             lu_A, piv_A, q_p
         )
@@ -269,17 +260,21 @@ def factor_condensed_collocation(
         c_gauss = c_g.reshape(N, m * n)
         arc_u = c_m - jnp.einsum("Ni,Nia->Na", c_gauss, K_all)
         arc_T = c_T - jnp.sum(c_gauss * gamma_T)
-        d_scalar = 0.0 if d_p is None else jnp.squeeze(jnp.asarray(d_p, dtype=jnp.float64))
+        d_scalar = (
+            jnp.array(0.0, dtype=jnp.float64)
+            if d_p is None
+            else jnp.squeeze(jnp.asarray(d_p, dtype=jnp.float64))
+        )
         arc_p = d_scalar - jnp.sum(c_gauss * gamma_p)
 
-        S_blocks = jnp.stack([s_T, s_p], axis=-1)  # (N, n, 2)
-        P_blocks = jnp.stack([phase_u, arc_u], axis=1)  # (N, 2, n)
+        S_blocks = jnp.stack([s_T, s_p], axis=-1)
+        P_blocks = jnp.stack([phase_u, arc_u], axis=1)
         D_border = jnp.array([[phase_T, phase_p], [arc_T, arc_p]], dtype=jnp.float64)
     else:
         gamma_p = None
         c_gauss = None
-        S_blocks = s_T[:, :, None]  # (N, n, 1)
-        P_blocks = phase_u[:, None, :]  # (N, 1, n)
+        S_blocks = s_T[:, :, None]
+        P_blocks = phase_u[:, None, :]
         D_border = jnp.array([[phase_T]], dtype=jnp.float64)
 
     cyclic = factor_cyclic_block_bidiagonal(M_k, S_blocks, P_blocks, D_border, rcond=rcond)
@@ -293,6 +288,47 @@ def factor_condensed_collocation(
         c_gauss=c_gauss,
         C=C,
         cyclic=cyclic,
+    )
+
+
+def factor_condensed_collocation(
+    problem: CollocationProblem,
+    X: jax.Array,
+    p: float | jax.Array,
+    mesh: jax.Array,
+    dot_u_ref: jax.Array,
+    *,
+    c_X: jax.Array | None = None,
+    d_p: float | jax.Array | None = None,
+    rcond: float = 1e-12,
+) -> CondensedCollocationFactor:
+    """Factorize collocation BVP Jacobian (square or bordered) via block condensation."""
+    _, u_gauss, T = problem.unpack_vars(X)
+    p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
+
+    f_all = jax.vmap(jax.vmap(lambda u_: problem.fn(u_, p_val, **problem.kwargs)))(u_gauss)
+    Ju_all = jax.vmap(jax.vmap(jax.jacfwd(lambda u_: problem.fn(u_, p_val, **problem.kwargs))))(
+        u_gauss
+    )
+    q_param = (
+        -T
+        * jax.vmap(
+            jax.vmap(lambda u_: jax.jacfwd(lambda p_: problem.fn(u_, p_, **problem.kwargs))(p_val))
+        )(u_gauss)
+        if c_X is not None
+        else None
+    )
+    return _condense_collocation_blocks(
+        problem,
+        T=T,
+        mesh=mesh,
+        dot_u_ref=dot_u_ref,
+        Ju_all=Ju_all,
+        q_scalar=-f_all,
+        q_param=q_param,
+        c_X=c_X,
+        d_p=d_p,
+        rcond=rcond,
     )
 
 
