@@ -142,3 +142,36 @@ def test_refine_periodic_bifurcation_pd_rossler():
     dist_neg1 = float(jnp.min(jnp.abs(refined.floquet_multipliers + 1.0)))
     assert dist_neg1 < 1e-7, f"Expected Floquet multiplier at -1, min dist={dist_neg1}"
     assert refined.bifurcations == ("PD",)
+
+    # Switch onto the period-2 branch in pure JAX (and verify jax.jit compatibility)
+    @jax.jit
+    def _pd_switch_jit(orb: bx.PeriodicOrbitResult) -> tuple[jax.Array, jax.Array, jax.Array]:
+        p2_orb = bx.branch_from_period_doubling(orb, ds=0.4, compute_floquet=True)
+        assert p2_orb.p is not None and p2_orb.is_stable is not None
+        return p2_orb.p, p2_orb.period, p2_orb.converged
+
+    p2_val, T2_val, conv2 = _pd_switch_jit(refined._replace(bifurcations=()))
+    assert bool(conv2)
+    assert float(p2_val) > float(refined.p)
+    assert abs(float(T2_val) - 2.0 * float(refined.period)) < 0.2
+
+    sol_p2 = bx.branch_from_period_doubling(refined, ds=0.4, compute_floquet=True)
+    assert bool(sol_p2.converged) and sol_p2.p is not None and sol_p2.is_stable is not None
+    assert bool(sol_p2.is_stable), "Supercritical Rossler period-2 branch should be stable"
+    # Verify genuine period-2 asymmetry (first half != second half)
+    half_diff = float(jnp.max(jnp.abs(sol_p2.u_mesh[:N] - sol_p2.u_mesh[N:])))
+    assert half_diff > 0.05, f"Orbit collapsed onto period-1 branch: half_diff={half_diff}"
+
+    # Continue the new period-2 branch seamlessly
+    branch_p2 = bx.continue_periodic_orbit(
+        sol_p2.problem,
+        sol_p2,
+        p_start=float(sol_p2.p),
+        p_end=float(sol_p2.p) + 0.5,
+        dp=0.1,
+        max_steps=6,
+        param_mode="arclength",
+        compute_floquet=True,
+    )
+    assert len(branch_p2) >= 4
+    assert all(bool(o.converged) for o in branch_p2)
