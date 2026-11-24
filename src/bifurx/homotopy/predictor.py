@@ -12,6 +12,13 @@ from bifurx.homotopy.bordered import (
 )
 from bifurx.homotopy.norm import weighted_distance, weighted_inf_norm
 
+_PADE_R2_TOL = 1e-7  # sqrt(1e-14)
+_PADE_R3_TOL = 1e-14 ** (1.0 / 3.0)
+_PADE_SCALE_MIN = 1e-6
+_PADE_SCALE_MAX = 1e6
+_PADE_COEFF_TOL = 1e-12
+_PADE_POLE_DENOM_MIN = 0.1
+
 
 def tangent_predict(
     u: jax.Array,
@@ -42,9 +49,9 @@ def estimate_pade_trust_region(
     r2 = jnp.sqrt(n2)
     r3 = jnp.cbrt(n3)
     r = jnp.maximum(n1, jnp.maximum(r2, r3))
-    eps_r2 = 1e-7  # sqrt(1e-14)
-    eps_r3 = 1e-14 ** (1.0 / 3.0)
-    has_pole = jnp.isfinite(r) & (r > 0.0) & (r2 > eps_r2 * r) & (r3 > eps_r3 * r)
+    has_pole = (
+        jnp.isfinite(r) & (r > 0.0) & (r2 > _PADE_R2_TOL * r) & (r3 > _PADE_R3_TOL * r)
+    )
     return jnp.where(has_pole, n2 / jnp.where(has_pole, n3, 1.0), jnp.inf)
 
 
@@ -125,14 +132,18 @@ def pade21_predict(
     """Component-wise Padé (2,1) rational predictor with Taylor fallback near poles/zeros."""
     n = u.shape[0]
     z0 = jnp.concatenate([u, jnp.atleast_1d(p)])
-    lam = jnp.where(jnp.isfinite(trust_region), jnp.clip(trust_region, 1e-6, 1e6), 1.0)
+    lam = jnp.where(
+        jnp.isfinite(trust_region),
+        jnp.clip(trust_region, _PADE_SCALE_MIN, _PADE_SCALE_MAX),
+        1.0,
+    )
     c2_sq = (z2 * (lam**2)) ** 2
     c3_sq = (z3 * (lam**3)) ** 2
-    tol_sq = (1e-12**2) * (z0**2 + (z1 * lam) ** 2 + c2_sq + c3_sq)
+    tol_sq = (_PADE_COEFF_TOL**2) * (z0**2 + (z1 * lam) ** 2 + c2_sq + c3_sq)
 
     z2_safe = jnp.where(jnp.abs(z2) > 1e-30, z2, 1.0)
     denom = 1.0 - ds * (z3 / z2_safe)
-    use_taylor = (c3_sq <= tol_sq) | (c2_sq <= tol_sq) | (jnp.abs(denom) < 0.1)
+    use_taylor = (c3_sq <= tol_sq) | (c2_sq <= tol_sq) | (jnp.abs(denom) < _PADE_POLE_DENOM_MIN)
 
     z_taylor = z0 + ds * (z1 + ds * z2)
     denom_safe = jnp.where(use_taylor, 1.0, denom)

@@ -7,6 +7,12 @@ import jax.numpy as jnp
 
 from bifurx.bvp.condensation import condense_local_blocks
 
+_SPLIT_2X2_MAX_ITERS = 8
+_EXCEPTIONAL_SHIFT_PERIOD = 10
+_ZERO_SHIFT_LOG_GAP = 30.0
+_DEFAULT_QR_ITERS_PER_DIM = 60
+_DEFAULT_VARIATIONAL_STEPS = 400
+
 if TYPE_CHECKING:
     from bifurx.bvp.collocation import CollocationProblem, PeriodicOrbitResult
 
@@ -203,7 +209,7 @@ def _split_real_2x2_block(
 
     def cond_fn(state: tuple[jax.Array, jax.Array, jax.Array, jax.Array]) -> jax.Array:
         H_c, _, it, done = state
-        return (~done) & (it < 8) & (~_is_negligible_subdiag(H_c, i + 1, tol))
+        return (~done) & (it < _SPLIT_2X2_MAX_ITERS) & (~_is_negligible_subdiag(H_c, i + 1, tol))
 
     def body_fn(
         state: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
@@ -301,7 +307,7 @@ def _francis_periodic_qr_step(
     det_T = T_hat[0, 0] * T_hat[1, 1] - T_hat[0, 1] * T_hat[1, 0]
 
     # Exceptional shift every 10th iteration without deflation to break cyclic symmetries
-    use_exceptional = (its > 0) & ((its % 10) == 0)
+    use_exceptional = (its > 0) & ((its % _EXCEPTIONAL_SHIFT_PERIOD) == 0)
     s_exc = jnp.abs(M_hat[0, 0]) + jnp.abs(M_hat[1, 0]) + jnp.abs(M_hat[1, 1])
     tr_use = jnp.where(use_exceptional, 1.5 * s_exc, tr_T)
     det_use = jnp.where(use_exceptional, s_exc * s_exc, det_T)
@@ -309,7 +315,7 @@ def _francis_periodic_qr_step(
 
     # If trailing shift vastly dominates leading block, fall back to zero shift so large
     # eigenvalues move to the top and small eigenvalues deflate at the bottom.
-    use_zero_shift = (~use_exceptional) & (trail_zero | ((alpha_use - beta) > 30.0))
+    use_zero_shift = (~use_exceptional) & (trail_zero | ((alpha_use - beta) > _ZERO_SHIFT_LOG_GAP))
     gamma = jnp.maximum(alpha_use, beta)
     c_M = jnp.where(lead_zero, 0.0, jnp.exp(jnp.clip(beta - gamma, -700.0, 0.0)))
     c_T = jnp.where(use_zero_shift, 0.0, jnp.exp(jnp.clip(alpha_use - gamma, -700.0, 0.0)))
@@ -385,7 +391,7 @@ def periodic_real_schur(
     H, R_all = _periodic_hessenberg_triangular(factors_arr)
 
     if n >= 3:
-        max_it = 60 * n if max_iters is None else int(max_iters)
+        max_it = _DEFAULT_QR_ITERS_PER_DIM * n if max_iters is None else int(max_iters)
 
         def qr_cond(
             state: tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array],
@@ -684,7 +690,7 @@ def evaluate_floquet_diagnostics_from_factors(
 def _monodromy_variational(
     sol: PeriodicOrbitResult,
     p: float | jax.Array = 0.0,
-    num_steps: int = 400,
+    num_steps: int = _DEFAULT_VARIATIONAL_STEPS,
 ) -> jax.Array:
     """Compute the monodromy matrix M by integrating the variational equation via RK4."""
     n = sol.problem.dim

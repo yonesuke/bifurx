@@ -17,6 +17,8 @@ from bifurx.homotopy.tracker import compute_tangent, track_arclength_scan
 from bifurx.options import ContinuationOptions, NewtonOptions, resolve_continuation_options
 from bifurx.problem import BifurcationProblem
 
+_REFINEMENT_RESIDUAL_WARN_TOL = 1e-3
+
 
 class NewtonResult(NamedTuple):
     """Result of pure-JAX bordered Newton corrector iterations."""
@@ -371,7 +373,7 @@ def continuation(
 
                 res_norm = float(jnp.linalg.norm(problem.residual(u_ref, p_ref)))
                 details: dict[str, Any] = {"step": s_idx}
-                if res_norm > 1e-3:
+                if res_norm > _REFINEMENT_RESIDUAL_WARN_TOL:
                     details["refinement_failed"] = True
                     details["residual_norm"] = res_norm
                 if bif_type == "BP":

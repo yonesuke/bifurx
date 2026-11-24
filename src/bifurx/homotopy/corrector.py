@@ -18,6 +18,11 @@ from bifurx.homotopy.bordered import (
 from bifurx.homotopy.norm import weighted_inf_norm
 from bifurx.homotopy.stepsize import kantorovich_h
 
+_LIN_RES_FACTOR = 0.5
+_LIN_SCALE_TOL = 1e-6
+_LSTSQ_RCOND = 1e-12
+_OMEGA_DECAY_FACTOR = 0.25
+
 
 class CorrectorResult(NamedTuple):
     """Result of pure-JAX bordered Newton arclength corrector."""
@@ -68,12 +73,16 @@ def _linear_consistency_ok(
     row_scale = (
         jnp.sum(jnp.abs(Ju) * weights_arr[:n][None, :], axis=1) + jnp.abs(Jp) * weights_arr[-1]
     ) * step_norm_w
-    f_lin_ok = jnp.all(jnp.abs(f_lin) <= 0.5 * jnp.abs(f_val) + 1e-6 * row_scale)
+    f_lin_ok = jnp.all(
+        jnp.abs(f_lin) <= _LIN_RES_FACTOR * jnp.abs(f_val) + _LIN_SCALE_TOL * row_scale
+    )
     arc_lin = jnp.dot(c_vec, du) + d_val * dp + arc_res
     arc_scale = (
         jnp.sum(jnp.abs(c_vec) * weights_arr[:n]) + jnp.abs(d_val) * weights_arr[-1]
     ) * step_norm_w
-    arc_lin_ok = jnp.abs(arc_lin) <= 0.5 * jnp.abs(arc_res) + 1e-6 * arc_scale
+    arc_lin_ok = (
+        jnp.abs(arc_lin) <= _LIN_RES_FACTOR * jnp.abs(arc_res) + _LIN_SCALE_TOL * arc_scale
+    )
     return (
         jnp.isfinite(step_norm_w)
         & jnp.all(jnp.isfinite(du))
@@ -131,7 +140,7 @@ def _solve_factored_with_fallback(
     def _retry_lstsq() -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         n = du.shape[0]
         r = jnp.concatenate([-f_val.ravel(), jnp.atleast_1d(-arc_res)])
-        z_ls = jnp.linalg.lstsq(fac.M, r, rcond=1e-12)[0]
+        z_ls = jnp.linalg.lstsq(fac.M, r, rcond=_LSTSQ_RCOND)[0]
         du_d = jnp.asarray(z_ls[:n], dtype=jnp.float64)
         dp_d = jnp.asarray(jnp.squeeze(z_ls[n]), dtype=jnp.float64)
         sw_d = jnp.asarray(weighted_inf_norm(z_ls, weights_arr), dtype=jnp.float64)
@@ -175,7 +184,7 @@ def _solve_operator_step(
     r_rhs = jnp.concatenate([f_rhs, jnp.atleast_1d(arc_rhs)])
     r_lin = r_rhs + jvp_all
     lin_norm = jnp.linalg.norm(r_lin)
-    tol_rhs = 0.5 * jnp.linalg.norm(r_rhs) + 1e-6 * jnp.linalg.norm(jvp_all)
+    tol_rhs = _LIN_RES_FACTOR * jnp.linalg.norm(r_rhs) + _LIN_SCALE_TOL * jnp.linalg.norm(jvp_all)
     lin_ok = (
         jnp.isfinite(step_norm_w)
         & jnp.all(jnp.isfinite(du))
@@ -482,7 +491,7 @@ def correct_arclength_step(
                 (it == 0)
                 & (~first_step_arr)
                 & (omega_init_arr > 0.0)
-                & (0.125 * step_norm_w * omega_init_arr > h_a)
+                & (contraction_a * step_norm_w * omega_init_arr > h_a)
             )
             abort_contraction = (it >= 1) & (theta_next > a_bar)
             aborted_next = (~is_valid) | ((~conv_next) & (abort_i0 | abort_contraction))
@@ -530,7 +539,9 @@ def correct_arclength_step(
     ) = final_state
 
     omega_decay = jnp.where(
-        omega_init_arr > 0.0, 0.25 * omega_init_arr, jnp.array(1.0, dtype=jnp.float64)
+        omega_init_arr > 0.0,
+        _OMEGA_DECAY_FACTOR * omega_init_arr,
+        jnp.array(1.0, dtype=jnp.float64),
     )
     omega_out = jnp.where(conv_fin & (~has_om_fin), omega_decay, omega_fin)
 
