@@ -27,6 +27,7 @@ from bifurx.bvp.floquet import (
     periodic_schur_eigenvalues,
 )
 from bifurx.bvp.mesh import redistribute_mesh
+from bifurx.bvp.periodic_bifurcations import refine_periodic_bifurcation
 from bifurx.bvp.periodic_codim2 import (
     FixedPeriodContinuationResult,
     continue_fixed_period_2p,
@@ -53,6 +54,7 @@ __all__ = [
     "periodic_real_schur",
     "periodic_schur_eigenvalues",
     "redistribute_mesh",
+    "refine_periodic_bifurcation",
     "solve_condensed_bordered",
     "solve_condensed_collocation",
     "solve_periodic_orbit",

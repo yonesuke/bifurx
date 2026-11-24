@@ -33,6 +33,7 @@ from bifurx.bvp.collocation import (
 )
 from bifurx.bvp.floquet import compute_floquet_multipliers
 from bifurx.bvp.mesh import redistribute_mesh
+from bifurx.bvp.periodic_bifurcations import refine_periodic_bifurcation
 from bifurx.bvp.periodic_codim2 import (
     FixedPeriodContinuationResult,
     continue_fixed_period_2p,
@@ -112,6 +113,7 @@ __all__ = [
     "initialize_from_hopf",
     "redistribute_mesh",
     "refine_bifurcation_point",
+    "refine_periodic_bifurcation",
     "solve_bordered_block",
     "solve_bordered_direct",
     "solve_bordered_system",
