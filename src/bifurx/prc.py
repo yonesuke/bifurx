@@ -13,6 +13,7 @@ from bifurx.bvp.collocation import (
     continue_periodic_orbit,
     solve_periodic_orbit,
 )
+from bifurx.homotopy.bordered import safe_lu_factor, safe_lu_solve
 from bifurx.options import CollocationOptions, ContinuationOptions
 
 
@@ -134,16 +135,8 @@ def _solve_adjoint_collocation_jax(
 
     rhs_cond = jnp.zeros(n_mesh + 1, dtype=jnp.float64).at[n_mesh].set(omega_arr)
 
-    lu_cond, piv_cond = jax.scipy.linalg.lu_factor(M_cond)
-    u_diag = jnp.abs(jnp.diag(lu_cond))
-    use_lu_cond = jnp.all(jnp.isfinite(lu_cond)) & (
-        jnp.min(u_diag) > rcond * (jnp.max(u_diag) + 1e-30)
-    )
-    sol_cond = jax.lax.cond(
-        use_lu_cond,
-        lambda: jax.scipy.linalg.lu_solve((lu_cond, piv_cond), rhs_cond),
-        lambda: jnp.linalg.lstsq(M_cond, rhs_cond, rcond=rcond)[0],
-    )
+    lu_cond, piv_cond, use_lu_cond = safe_lu_factor(M_cond, rcond=rcond)
+    sol_cond = safe_lu_solve(M_cond, lu_cond, piv_cond, use_lu_cond, rhs_cond, rcond=rcond)
     return sol_cond[:n_mesh].reshape((N, n))
 
 

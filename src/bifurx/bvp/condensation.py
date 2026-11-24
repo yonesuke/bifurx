@@ -5,7 +5,12 @@ from typing import TYPE_CHECKING, NamedTuple
 import jax
 import jax.numpy as jnp
 
-from bifurx.homotopy.bordered import BorderedOperatorSolver, BorderedSolution
+from bifurx.homotopy.bordered import (
+    BorderedOperatorSolver,
+    BorderedSolution,
+    safe_lu_factor,
+    safe_lu_solve,
+)
 
 if TYPE_CHECKING:
     from bifurx.bvp.collocation import CollocationProblem
@@ -105,11 +110,7 @@ def factor_cyclic_block_bidiagonal(
         P0_total = P0_fin + P_cur_fin
         M_red = jnp.block([[A_fin + B_fin, S_fin], [P0_total, D_fin]])
 
-    lu_red, piv_red = jax.scipy.linalg.lu_factor(M_red)
-    u_diag = jnp.abs(jnp.diag(lu_red))
-    use_lu_red = jnp.all(jnp.isfinite(lu_red)) & (
-        jnp.min(u_diag) > rcond * (jnp.max(u_diag) + 1e-30)
-    )
+    lu_red, piv_red, use_lu_red = safe_lu_factor(M_red, rcond=rcond)
     return CyclicBlockBidiagonalFactor(
         Q=Q,
         R=R,
@@ -133,11 +134,7 @@ def solve_cyclic_block_bidiagonal(
 
     if N == 1:
         rhs_red = jnp.concatenate([r_cont[0], g_border], axis=0)
-        y_red = jax.lax.cond(
-            cyc_fac.use_lu_red,
-            lambda: jax.scipy.linalg.lu_solve((cyc_fac.lu_red, cyc_fac.piv_red), rhs_red),
-            lambda: jnp.linalg.lstsq(cyc_fac.M_red, rhs_red, rcond=1e-12)[0],
-        )
+        y_red = safe_lu_solve(cyc_fac.M_red, cyc_fac.lu_red, cyc_fac.piv_red, cyc_fac.use_lu_red, rhs_red)
         return y_red[:n][None, :], y_red[n:]
 
     def _fwd_step(
@@ -159,11 +156,7 @@ def solve_cyclic_block_bidiagonal(
     )
 
     rhs_red = jnp.concatenate([r_fin, g_fin], axis=0)
-    y_red = jax.lax.cond(
-        cyc_fac.use_lu_red,
-        lambda: jax.scipy.linalg.lu_solve((cyc_fac.lu_red, cyc_fac.piv_red), rhs_red),
-        lambda: jnp.linalg.lstsq(cyc_fac.M_red, rhs_red, rcond=1e-12)[0],
-    )
+    y_red = safe_lu_solve(cyc_fac.M_red, cyc_fac.lu_red, cyc_fac.piv_red, cyc_fac.use_lu_red, rhs_red)
     u0 = y_red[:n]
     w = y_red[n:]
 
