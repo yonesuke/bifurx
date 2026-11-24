@@ -86,9 +86,21 @@ def compute_tangent(
         tau_raw = bordered_solver.solve(fac_op, zero_u, one_f).z
         if param_mode == "natural":
             return tau_raw
-        if jac_u_fn is None or jac_p_fn is None or bool(jnp.all(jnp.isfinite(tau_raw))):
-            tau_aligned = tau_raw * jnp.where(tau_raw[-1] * dir_sgn < 0.0, -1.0, 1.0)
-            return _normalize_tangent(tau_aligned, w_arc)
+        tau_aligned = tau_raw * jnp.where(tau_raw[-1] * dir_sgn < 0.0, -1.0, 1.0)
+        tau_op = _normalize_tangent(tau_aligned, w_arc)
+        if jac_u_fn is None or jac_p_fn is None:
+            return tau_op
+
+        def _fallback_svd() -> jax.Array:
+            Ju_fb = jac_u_fn(u0_arr, p0_arr)
+            Jp_fb = jac_p_fn(u0_arr, p0_arr)
+            J_fb = jnp.hstack([Ju_fb, Jp_fb.reshape(-1, 1)])
+            _, _, vh_fb = jnp.linalg.svd(J_fb)
+            tau_fb = vh_fb[-1, :]
+            tau_fb = tau_fb * jnp.where(tau_fb[-1] * dir_sgn < 0.0, -1.0, 1.0)
+            return _normalize_tangent(tau_fb, w_arc)
+
+        return jax.lax.cond(jnp.all(jnp.isfinite(tau_raw)), lambda: tau_op, _fallback_svd)
 
     assert jac_u_fn is not None and jac_p_fn is not None
     Ju = jac_u_fn(u0_arr, p0_arr)

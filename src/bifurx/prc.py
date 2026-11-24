@@ -128,7 +128,7 @@ def _solve_adjoint_collocation_jax(
     M_cond = jnp.zeros((n_mesh + 1, n_mesh + 1), dtype=jnp.float64)
     M_cond = M_cond.at[:n_mesh, :n_mesh].set(cont_mat)
     # Keep all n periodic BC rows with rank-1 border alpha * f0_unit so M_cond stays
-    # nonsingular regardless of which component of f0 is zero (#22).
+    # nonsingular regardless of which component of f0 is zero.
     M_cond = M_cond.at[(N - 1) * n : n_mesh, n_mesh].set(f0_unit)
     M_cond = M_cond.at[n_mesh, :n].set(f0)
 
@@ -153,8 +153,15 @@ def _build_iprc_result(
     Z: jax.Array,
     period: jax.Array,
     omega: jax.Array,
+    *,
+    compute_zero_crossings: bool = True,
 ) -> IPRCResult:
     n = int(Z.shape[1])
+    zcs = (
+        [_find_zero_crossings(Z[:, comp], theta_grid) for comp in range(n)]
+        if compute_zero_crossings
+        else []
+    )
     return IPRCResult(
         ts=theta_grid * period,
         theta=theta_grid,
@@ -163,7 +170,7 @@ def _build_iprc_result(
         period=period,
         omega=omega,
         peak_amplitudes=jnp.max(jnp.abs(Z), axis=0),
-        zero_crossings=[_find_zero_crossings(Z[:, comp], theta_grid) for comp in range(n)],
+        zero_crossings=zcs,
     )
 
 
@@ -173,11 +180,14 @@ def compute_iprc(
     T: float | jax.Array | None = None,
     p: float | jax.Array | None = None,
     omega_target: float | jax.Array | None = None,
+    *,
+    compute_zero_crossings: bool = True,
     **kwargs: Any,
 ) -> IPRCResult:
     """Compute infinitesimal Phase Response Curve Z(t) via Gauss-Legendre collocation adjoint BVP.
 
     Accepts either a converged ``PeriodicOrbitResult`` or a vector field ``fn`` with ``(u_mesh, T)``.
+    Set ``compute_zero_crossings=False`` for pure-JAX ``jax.jit`` / ``jax.vmap`` compatibility.
     """
     if isinstance(sol_or_fn, PeriodicOrbitResult):
         sol = sol_or_fn
@@ -207,7 +217,14 @@ def compute_iprc(
     Z_eval = _solve_adjoint_collocation_jax(
         problem, mesh, u_mesh_arr, u_gauss, T_arr, p_val, omega_val
     )
-    return _build_iprc_result(mesh[:-1], u_mesh_arr, Z_eval, T_arr, omega_val)
+    return _build_iprc_result(
+        mesh[:-1],
+        u_mesh_arr,
+        Z_eval,
+        T_arr,
+        omega_val,
+        compute_zero_crossings=compute_zero_crossings,
+    )
 
 
 def continuation_iprc(
