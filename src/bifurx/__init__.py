@@ -39,7 +39,9 @@ from bifurx.bvp.periodic_bifurcations import (
 )
 from bifurx.bvp.periodic_codim2 import (
     FixedPeriodContinuationResult,
+    PeriodicCodim2Result,
     continue_fixed_period_2p,
+    continue_periodic_bifurcation_2p,
 )
 from bifurx.codim2 import (
     Codim2Point,
@@ -95,6 +97,7 @@ __all__ = [
     "IPRCResult",
     "NewtonOptions",
     "NewtonResult",
+    "PeriodicCodim2Result",
     "PeriodicOrbitResult",
     "TrackerParameters",
     "WeightedNormOptions",
@@ -107,6 +110,7 @@ __all__ = [
     "compute_initial_tangent",
     "compute_iprc",
     "continue_fixed_period_2p",
+    "continue_periodic_bifurcation_2p",
     "continue_periodic_orbit",
     "continuation",
     "continuation_codim2",
