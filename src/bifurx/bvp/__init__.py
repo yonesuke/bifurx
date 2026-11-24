@@ -33,13 +33,16 @@ from bifurx.bvp.periodic_bifurcations import (
 )
 from bifurx.bvp.periodic_codim2 import (
     FixedPeriodContinuationResult,
+    PeriodicCodim2Result,
     continue_fixed_period_2p,
+    continue_periodic_bifurcation_2p,
 )
 
 __all__ = [
     "CollocationProblem",
     "CondensedCollocationFactor",
     "FixedPeriodContinuationResult",
+    "PeriodicCodim2Result",
     "PeriodicOrbitResult",
     "branch_from_hopf",
     "branch_from_period_doubling",
@@ -47,6 +50,7 @@ __all__ = [
     "compute_floquet_exponents",
     "compute_floquet_multipliers",
     "continue_fixed_period_2p",
+    "continue_periodic_bifurcation_2p",
     "continue_periodic_orbit",
     "evaluate_floquet_diagnostics",
     "evaluate_floquet_diagnostics_from_factors",
