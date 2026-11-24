@@ -33,6 +33,7 @@ from bifurx.homotopy.predictor import (
     tangent_predict,
 )
 from bifurx.homotopy.pytree import PyTreeOptionsBase
+from bifurx.homotopy.rootfind import SafeguardedRootResult, safeguarded_secant_root
 from bifurx.homotopy.stepsize import (
     TrackerParameters,
     kantorovich_h,
@@ -51,6 +52,7 @@ __all__ = [
     "BorderedSolution",
     "CorrectorResult",
     "PyTreeOptionsBase",
+    "SafeguardedRootResult",
     "TrackScanResult",
     "TrackerParameters",
     "WeightedNormOptions",
@@ -68,6 +70,7 @@ __all__ = [
     "pade21_predict",
     "safe_lu_factor",
     "safe_lu_solve",
+    "safeguarded_secant_root",
     "solve_bordered_block",
     "solve_bordered_direct",
     "solve_bordered_system",

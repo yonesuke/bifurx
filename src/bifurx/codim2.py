@@ -15,7 +15,7 @@ from bifurx.bifurcations import (
     moore_spence_fold_residual,
     test_func_hopf,
 )
-from bifurx.homotopy import compute_tangent, track_arclength_scan
+from bifurx.homotopy import compute_tangent, safeguarded_secant_root, track_arclength_scan
 from bifurx.homotopy.corrector import correct_arclength_step
 from bifurx.options import ContinuationOptions, resolve_continuation_options
 
@@ -351,12 +351,12 @@ def continuation_codim2(
         n_pts = int(p1_out.shape[0])
         if n_pts >= 2:
 
-            def _eval_codim2_tf(
+            def _eval_codim2_tf_jax(
                 label_name: str,
                 us_pt: jax.Array,
                 pc_pt: jax.Array,
                 w_ref: jax.Array | None,
-            ) -> float:
+            ) -> jax.Array:
                 obs_pt = step_obs(
                     us_pt,
                     pc_pt,
@@ -367,21 +367,22 @@ def continuation_codim2(
                 if bif_type_upper == "LP":
                     w_raw_pt, v_pt, b_vv_pt, tf_zh_pt = obs_pt
                     if label_name == "ZH":
-                        return float(tf_zh_pt)
+                        return tf_zh_pt
                     w_use = (
                         jnp.where(jnp.dot(w_ref, w_raw_pt) < 0.0, -w_raw_pt, w_raw_pt)
                         if w_ref is not None
                         else w_raw_pt
                     )
                     if label_name == "CP":
-                        return float(0.5 * jnp.sum(w_use * b_vv_pt))
-                    return float(jnp.sum(w_use * v_pt))
+                        return 0.5 * jnp.sum(w_use * b_vv_pt)
+                    return jnp.sum(w_use * v_pt)
                 if label_name == "GH":
-                    return float(obs_pt[0])
+                    return obs_pt[0]
                 if label_name == "BT":
-                    return float(obs_pt[1])
-                return float(obs_pt[2])
+                    return obs_pt[1]
+                return obs_pt[2]
 
+            tf_tol = max(float(opts.newton.tol), 1e-10)
             for label, tf_arr in test_funcs_out.items():
                 valid_pairs = (
                     jnp.isfinite(tf_arr[:-1])
@@ -389,7 +390,6 @@ def continuation_codim2(
                     & ((tf_arr[:-1] * tf_arr[1:]) < 0.0)
                 )
                 for k in jnp.nonzero(valid_pairs)[0].tolist():
-                    tf0, tf1 = float(tf_arr[k]), float(tf_arr[k + 1])
                     us_k, pc_k = u_state_valid[k], p_cont_valid[k]
                     us_k1, pc_k1 = u_state_valid[k + 1], p_cont_valid[k + 1]
                     w_ref_k = w_aligned[k] if w_aligned is not None else None
@@ -402,62 +402,49 @@ def continuation_codim2(
                         ds_seg > 1e-12, dz_seg / jnp.maximum(ds_seg, 1e-30), tau_scan_valid[k]
                     )
 
-                    a_lo, a_hi = 0.0, 1.0
-                    f_lo, f_hi = tf0, tf1
-                    us_best = (1.0 - 0.5) * us_k + 0.5 * us_k1
-                    pc_best = (1.0 - 0.5) * pc_k + 0.5 * pc_k1
-                    tf_best = min(abs(tf0), abs(tf1))
-                    ref_iters = 0
-                    tf_tol = max(float(opts.newton.tol), 1e-10)
-
-                    for it in range(1, 16):
-                        ref_iters = it
-                        span = a_hi - a_lo
-                        if span < 1e-12:
-                            break
-                        if abs(f_hi - f_lo) > 1e-30:
-                            a_sec = a_lo - f_lo * span / (f_hi - f_lo)
-                        else:
-                            a_sec = 0.5 * (a_lo + a_hi)
-                        margin = 0.05 * span
-                        if a_lo + margin < a_sec < a_hi - margin:
-                            alpha = a_sec
-                        else:
-                            alpha = 0.5 * (a_lo + a_hi)
-
-                        us_guess = (1.0 - alpha) * us_k + alpha * us_k1
-                        pc_guess = (1.0 - alpha) * pc_k + alpha * pc_k1
+                    def _eval_seg(
+                        alpha: jax.Array,
+                        *,
+                        _label: str = label,
+                        _us_k: jax.Array = us_k,
+                        _pc_k: jax.Array = pc_k,
+                        _us_k1: jax.Array = us_k1,
+                        _pc_k1: jax.Array = pc_k1,
+                        _tau_seg: jax.Array = tau_seg,
+                        _ds_seg: jax.Array = ds_seg,
+                        _w_ref_k: jax.Array | None = w_ref_k,
+                    ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
+                        us_guess = (1.0 - alpha) * _us_k + alpha * _us_k1
+                        pc_guess = (1.0 - alpha) * _pc_k + alpha * _pc_k1
                         pol = correct_arclength_step(
                             residual_fn=problem_fn,
                             jac_u_fn=jac_u_aug,
                             jac_p_fn=jac_p_aug,
                             u_init=us_guess,
                             p_init=pc_guess,
-                            u_prev=us_k,
-                            p_prev=pc_k,
-                            tau_prev=tau_seg,
-                            ds=alpha * ds_seg,
+                            u_prev=_us_k,
+                            p_prev=_pc_k,
+                            tau_prev=_tau_seg,
+                            ds=alpha * _ds_seg,
                             tol=opts.newton.tol,
                             step_tol=opts.newton.step_tol,
                             max_iters=8,
                         )
-                        pol_ok = bool(
-                            pol.converged & jnp.all(jnp.isfinite(pol.u)) & jnp.isfinite(pol.p)
-                        )
-                        us_cand = pol.u if pol_ok else us_guess
-                        pc_cand = pol.p if pol_ok else pc_guess
-                        f_mid = _eval_codim2_tf(label, us_cand, pc_cand, w_ref_k)
-                        if not jnp.isfinite(f_mid):
-                            break
+                        pol_ok = pol.converged & jnp.all(jnp.isfinite(pol.u)) & jnp.isfinite(pol.p)
+                        us_cand = jnp.where(pol_ok, pol.u, us_guess)
+                        pc_cand = jnp.where(pol_ok, pol.p, pc_guess)
+                        f_mid = _eval_codim2_tf_jax(_label, us_cand, pc_cand, _w_ref_k)
+                        return f_mid, (us_cand, pc_cand)
 
-                        us_best, pc_best, tf_best = us_cand, pc_cand, f_mid
-                        if abs(f_mid) <= tf_tol:
-                            break
-                        if f_lo * f_mid <= 0.0:
-                            a_hi, f_hi = alpha, f_mid
-                        else:
-                            a_lo, f_lo = alpha, f_mid
-
+                    root_res = safeguarded_secant_root(
+                        _eval_seg,
+                        tf_arr[k],
+                        tf_arr[k + 1],
+                        (0.5 * (us_k + us_k1), 0.5 * (pc_k + pc_k1)),
+                        tol=tf_tol,
+                        max_iters=15,
+                    )
+                    us_best, pc_best = root_res.payload
                     u_pt, p1_pt, p2_pt, _ = _unpack_step(us_best, pc_best)
                     singularities.append(
                         Codim2Point(
@@ -467,10 +454,10 @@ def continuation_codim2(
                             p2=float(p2_pt),
                             step=k + 1,
                             details={
-                                "test_func_before": tf0,
-                                "test_func_after": tf1,
-                                "test_func_refined": float(tf_best),
-                                "refinement_iters": ref_iters,
+                                "test_func_before": float(tf_arr[k]),
+                                "test_func_after": float(tf_arr[k + 1]),
+                                "test_func_refined": float(root_res.f_val),
+                                "refinement_iters": int(root_res.iterations),
                             },
                         )
                     )

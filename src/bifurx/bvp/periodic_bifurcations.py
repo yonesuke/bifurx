@@ -17,6 +17,7 @@ from bifurx.bvp.floquet import (
     monodromy_factors_condensation,
 )
 from bifurx.homotopy.corrector import correct_arclength_step
+from bifurx.homotopy.rootfind import safeguarded_secant_root
 
 
 def _eval_periodic_bif_test_func(
@@ -101,52 +102,10 @@ def refine_periodic_bifurcation(
 
     f_lo0 = _eval_periodic_bif_test_func(orbit_a, X_a, p_a, mesh, tau_seg, w_arc, dot_u_ref, btype)
     f_hi0 = _eval_periodic_bif_test_func(orbit_a, X_b, p_b, mesh, tau_seg, w_arc, dot_u_ref, btype)
-    tol_arr = jnp.asarray(tol, dtype=jnp.float64)
 
-    init_state = (
-        jnp.array(0.0, dtype=jnp.float64),  # a_lo
-        jnp.array(1.0, dtype=jnp.float64),  # a_hi
-        f_lo0,
-        f_hi0,
-        0.5 * (X_a + X_b),  # X_best
-        0.5 * (p_a + p_b),  # p_best
-        jnp.minimum(jnp.abs(f_lo0), jnp.abs(f_hi0)),  # abs_tf_best
-        jnp.array(jnp.inf, dtype=jnp.float64),  # res_norm_best
-        jnp.bool_(False),  # conv_best
-        jnp.int32(0),  # last_side (-1: left/hi moved, +1: right/lo moved, 0: init)
-        jnp.int32(0),  # it
-        jnp.bool_(False),  # done
-    )
-
-    def cond_fn(state: tuple[jax.Array, ...]) -> jax.Array:
-        a_lo, a_hi, _, _, _, _, _, _, _, _, it, done = state
-        return (~done) & (it < max_iters) & ((a_hi - a_lo) > 1e-12)
-
-    def body_fn(state: tuple[jax.Array, ...]) -> tuple[jax.Array, ...]:
-        (
-            a_lo,
-            a_hi,
-            f_lo,
-            f_hi,
-            X_best,
-            p_best,
-            abs_tf_best,
-            rn_best,
-            conv_best,
-            last_side,
-            it,
-            _,
-        ) = state
-        span = a_hi - a_lo
-        denom = f_hi - f_lo
-        safe_denom = jnp.where(jnp.abs(denom) > 1e-30, denom, 1.0)
-        a_sec = jnp.where(
-            jnp.abs(denom) > 1e-30, a_lo - f_lo * span / safe_denom, 0.5 * (a_lo + a_hi)
-        )
-        margin = 0.05 * span
-        use_sec = (a_sec > a_lo + margin) & (a_sec < a_hi - margin)
-        alpha = jnp.where(use_sec, a_sec, 0.5 * (a_lo + a_hi))
-
+    def _eval_alpha(
+        alpha: jax.Array,
+    ) -> tuple[jax.Array, tuple[jax.Array, jax.Array, jax.Array, jax.Array]]:
         X_guess = (1.0 - alpha) * X_a + alpha * X_b
         p_guess = (1.0 - alpha) * p_a + alpha * p_b
         pol = correct_arclength_step(
@@ -170,52 +129,19 @@ def refine_periodic_bifurcation(
         f_mid = _eval_periodic_bif_test_func(
             orbit_a, X_cand, p_cand, mesh, tau_seg, w_arc, dot_u_ref, btype
         )
-        valid_mid = jnp.isfinite(f_mid)
+        return f_mid, (X_cand, p_cand, pol.residual_norm, pol_ok)
 
-        # Illinois-modified secant update prevents stalling on strongly convex test functions
-        go_left = (f_lo * f_mid) <= 0.0
-        cur_side = jnp.where(go_left, jnp.int32(-1), jnp.int32(1))
-        same_side = cur_side == last_side
-        a_lo_new = jnp.where(valid_mid & (~go_left), alpha, a_lo)
-        f_lo_new = jnp.where(
-            valid_mid & (~go_left),
-            f_mid,
-            jnp.where(valid_mid & go_left & same_side, 0.5 * f_lo, f_lo),
-        )
-        a_hi_new = jnp.where(valid_mid & go_left, alpha, a_hi)
-        f_hi_new = jnp.where(
-            valid_mid & go_left,
-            f_mid,
-            jnp.where(valid_mid & (~go_left) & same_side, 0.5 * f_hi, f_hi),
-        )
-        last_side_new = jnp.where(valid_mid, cur_side, last_side)
-
-        abs_f_mid = jnp.abs(f_mid)
-        better = valid_mid & (abs_f_mid <= abs_tf_best)
-        X_best_new = jnp.where(better, X_cand, X_best)
-        p_best_new = jnp.where(better, p_cand, p_best)
-        abs_tf_new = jnp.where(better, abs_f_mid, abs_tf_best)
-        rn_new = jnp.where(better, pol.residual_norm, rn_best)
-        conv_new = jnp.where(better, pol_ok, conv_best)
-
-        done_new = (~valid_mid) | (abs_f_mid <= tol_arr)
-        return (
-            a_lo_new,
-            a_hi_new,
-            f_lo_new,
-            f_hi_new,
-            X_best_new,
-            p_best_new,
-            abs_tf_new,
-            rn_new,
-            conv_new,
-            last_side_new,
-            it + jnp.int32(1),
-            done_new,
-        )
-
-    final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
-    _, _, _, _, X_fin, p_fin, _, rn_fin, conv_fin, _, it_fin, _ = final_state
+    init_payload = (
+        0.5 * (X_a + X_b),
+        0.5 * (p_a + p_b),
+        jnp.array(jnp.inf, dtype=jnp.float64),
+        jnp.bool_(False),
+    )
+    root_res = safeguarded_secant_root(
+        _eval_alpha, f_lo0, f_hi0, init_payload, tol=tol, max_iters=max_iters
+    )
+    X_fin, p_fin, rn_fin, conv_fin = root_res.payload
+    it_fin = root_res.iterations
     u_m_fin, u_g_fin, T_fin = problem.unpack_vars(X_fin)
 
     factors_fin = monodromy_factors_condensation(problem, mesh, u_g_fin, T_fin, p=p_fin)
