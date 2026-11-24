@@ -79,7 +79,6 @@ def refine_periodic_bifurcation(
 
     problem = orbit_a.problem
     mesh = jnp.asarray(orbit_a.mesh, dtype=jnp.float64)
-    h_seg = mesh[1:] - mesh[:-1]
 
     X_a = problem.pack_vars(orbit_a.u_mesh, orbit_a.u_gauss, orbit_a.period)
     X_b = problem.pack_vars(orbit_b.u_mesh, orbit_b.u_gauss, orbit_b.period)
@@ -93,8 +92,7 @@ def refine_periodic_bifurcation(
     ds_seg = jnp.sqrt(jnp.maximum(jnp.dot(w_arc * dz, dz), 1e-30))
     tau_seg = dz / ds_seg
 
-    U_ref = jnp.concatenate([orbit_a.u_mesh[:, None, :], orbit_a.u_gauss], axis=1)
-    dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_seg[:, None, None]
+    dot_u_ref = problem.derivative_at_gauss(orbit_a.u_mesh, orbit_a.u_gauss, mesh)
     u_ref_g = jnp.asarray(orbit_a.u_gauss, dtype=jnp.float64)
     bordered_solver = make_collocation_bordered_solver(problem, mesh, dot_u_ref)
 
@@ -266,7 +264,6 @@ def branch_from_period_doubling(
     problem = pd_orbit.problem
     N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
     mesh = jnp.asarray(pd_orbit.mesh, dtype=jnp.float64)
-    h_1 = mesh[1:] - mesh[:-1]
     u_m = jnp.asarray(pd_orbit.u_mesh, dtype=jnp.float64)
     u_g = jnp.asarray(pd_orbit.u_gauss, dtype=jnp.float64)
     T_1 = jnp.squeeze(jnp.asarray(pd_orbit.period, dtype=jnp.float64))
@@ -274,8 +271,7 @@ def branch_from_period_doubling(
     ds_val = jnp.squeeze(jnp.asarray(ds, dtype=jnp.float64))
 
     # 1. Extract condensed interval maps K_all and M_k from the period-1 orbit
-    U_1 = jnp.concatenate([u_m[:, None, :], u_g], axis=1)
-    dot_u_1 = jnp.einsum("mj,Njd->Nmd", problem.D, U_1) / h_1[:, None, None]
+    dot_u_1 = problem.derivative_at_gauss(u_m, u_g, mesh)
     X_1 = problem.pack_vars(u_m, u_g, T_1)
     fac_1 = factor_condensed_collocation(problem, X_1, p_pd, mesh, dot_u_1)
 
@@ -306,7 +302,6 @@ def branch_from_period_doubling(
         **problem.kwargs,
     )
     mesh_2 = jnp.concatenate([0.5 * mesh[:-1], 0.5 + 0.5 * mesh], axis=0)
-    h_2 = mesh_2[1:] - mesh_2[:-1]
 
     if problem.period_shift is not None:
         u_m_second = u_m + problem.period_shift[None, :]
@@ -331,8 +326,7 @@ def branch_from_period_doubling(
     tau_norm = jnp.sqrt(jnp.maximum(jnp.dot(w_arc_2 * tau_raw, tau_raw), 1e-30))
     tau0 = tau_raw / tau_norm
 
-    U_ref_2 = jnp.concatenate([u_m_2[:, None, :], u_g_2], axis=1)
-    dot_u_ref_2 = jnp.einsum("mj,Njd->Nmd", prob_2.D, U_ref_2) / h_2[:, None, None]
+    dot_u_ref_2 = prob_2.derivative_at_gauss(u_m_2, u_g_2, mesh_2)
     bordered_solver_2 = make_collocation_bordered_solver(prob_2, mesh_2, dot_u_ref_2)
 
     def _res_fn_2(X_v: jax.Array, p_v: jax.Array) -> jax.Array:

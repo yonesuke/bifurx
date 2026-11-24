@@ -13,6 +13,8 @@ from bifurx.bvp.collocation import (
     continue_periodic_orbit,
     solve_periodic_orbit,
 )
+from bifurx.bvp.condensation import condense_local_blocks
+from bifurx.homotopy.bordered import safe_lu_factor, safe_lu_solve
 from bifurx.options import CollocationOptions, ContinuationOptions
 
 
@@ -72,9 +74,7 @@ def _solve_adjoint_collocation_jax(
     rcond: float = 1e-12,
 ) -> jax.Array:
     """Pure-JAX de Boor-Swartz block-condensed linear solve for the periodic adjoint BVP."""
-    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
-    D = jnp.asarray(problem.D, dtype=jnp.float64)
-    C = jnp.asarray(problem.C, dtype=jnp.float64)
+    N, n = problem.num_intervals, problem.dim
     mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
     u_mesh_arr = jnp.asarray(u_mesh, dtype=jnp.float64)
     u_gauss_arr = jnp.asarray(u_gauss, dtype=jnp.float64)
@@ -82,13 +82,10 @@ def _solve_adjoint_collocation_jax(
     p_val = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
     omega_arr = jnp.squeeze(jnp.asarray(omega_val, dtype=jnp.float64))
     h = mesh_arr[1:] - mesh_arr[:-1]
-
     eye_n = jnp.eye(n, dtype=jnp.float64)
-    eye_m = jnp.eye(m, dtype=jnp.float64)
 
     jac_fn = jax.jacfwd(lambda u: problem.fn(u, p_val, **problem.kwargs))
     Ju_all = jax.vmap(jax.vmap(jac_fn))(u_gauss_arr)
-    Ju_T_all = jnp.swapaxes(Ju_all, -2, -1)
 
     f0 = jnp.atleast_1d(
         jnp.asarray(problem.fn(u_mesh_arr[0], p_val, **problem.kwargs), dtype=jnp.float64)
@@ -96,23 +93,8 @@ def _solve_adjoint_collocation_jax(
     f0_norm = jnp.linalg.norm(f0)
     f0_unit = f0 / jnp.where(f0_norm > 1e-30, f0_norm, 1.0)
 
-    # Local adjoint collocation system on each interval k:
-    #   A_k^adj Z_gauss,k + B_k^adj Z_mesh,k = 0  =>  Z_gauss,k = -K_k^adj Z_mesh,k
-    A_blocks = (D[None, :, 1:] / h[:, None, None])[:, :, :, None, None] * eye_n[
-        None, None, None, :, :
-    ] + T_val * eye_m[None, :, :, None, None] * Ju_T_all[:, :, None, :, :]
-    A_all = jnp.swapaxes(A_blocks, 2, 3).reshape(N, m * n, m * n)
-    B_all = ((D[None, :, 0] / h[:, None])[:, :, None, None] * eye_n[None, None, :, :]).reshape(
-        N, m * n, n
-    )
-
-    lu_A, piv_A = jax.vmap(jax.scipy.linalg.lu_factor)(A_all)
-    K_all = jax.vmap(lambda lu_k, piv_k, b_k: jax.scipy.linalg.lu_solve((lu_k, piv_k), b_k))(
-        lu_A, piv_A, B_all
-    )
-
-    # Endpoint map Z_end,k = M_k^adj Z_mesh,k
-    M_k = C[0] * eye_n[None, :, :] - jnp.einsum("j,Njab->Nab", C[1:], K_all.reshape(N, m, n, n))
+    # Local adjoint collocation condensation: endpoint map Z_end,k = M_k^adj Z_mesh,k
+    _, _, _, M_k = condense_local_blocks(problem, h, T_val, Ju_all, adjoint=True)
 
     # Condensed (N*n + 1) x (N*n + 1) system for [Z_mesh, alpha]:
     #   Z_mesh,k+1 - M_k^adj Z_mesh,k = 0                      (k = 0..N-2)
@@ -134,16 +116,8 @@ def _solve_adjoint_collocation_jax(
 
     rhs_cond = jnp.zeros(n_mesh + 1, dtype=jnp.float64).at[n_mesh].set(omega_arr)
 
-    lu_cond, piv_cond = jax.scipy.linalg.lu_factor(M_cond)
-    u_diag = jnp.abs(jnp.diag(lu_cond))
-    use_lu_cond = jnp.all(jnp.isfinite(lu_cond)) & (
-        jnp.min(u_diag) > rcond * (jnp.max(u_diag) + 1e-30)
-    )
-    sol_cond = jax.lax.cond(
-        use_lu_cond,
-        lambda: jax.scipy.linalg.lu_solve((lu_cond, piv_cond), rhs_cond),
-        lambda: jnp.linalg.lstsq(M_cond, rhs_cond, rcond=rcond)[0],
-    )
+    lu_cond, piv_cond, use_lu_cond = safe_lu_factor(M_cond, rcond=rcond)
+    sol_cond = safe_lu_solve(M_cond, lu_cond, piv_cond, use_lu_cond, rhs_cond, rcond=rcond)
     return sol_cond[:n_mesh].reshape((N, n))
 
 

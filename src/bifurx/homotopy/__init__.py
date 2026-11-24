@@ -9,6 +9,8 @@ from bifurx.homotopy.bordered import (
     factor_bordered_block,
     factor_bordered_matrix,
     make_gmres_bordered_solver,
+    safe_lu_factor,
+    safe_lu_solve,
     solve_bordered_block,
     solve_bordered_direct,
     solve_bordered_system,
@@ -30,6 +32,7 @@ from bifurx.homotopy.predictor import (
     pade21_predict,
     tangent_predict,
 )
+from bifurx.homotopy.pytree import PyTreeOptionsBase
 from bifurx.homotopy.stepsize import (
     TrackerParameters,
     kantorovich_h,
@@ -47,6 +50,7 @@ __all__ = [
     "BorderedOperatorSolver",
     "BorderedSolution",
     "CorrectorResult",
+    "PyTreeOptionsBase",
     "TrackScanResult",
     "TrackerParameters",
     "WeightedNormOptions",
@@ -62,6 +66,8 @@ __all__ = [
     "kantorovich_h",
     "make_gmres_bordered_solver",
     "pade21_predict",
+    "safe_lu_factor",
+    "safe_lu_solve",
     "solve_bordered_block",
     "solve_bordered_direct",
     "solve_bordered_system",

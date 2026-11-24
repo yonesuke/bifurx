@@ -16,14 +16,12 @@ def _equidistribute_mesh(
     mesh = jnp.asarray(sol.mesh, dtype=jnp.float64)
     u_mesh = jnp.asarray(sol.u_mesh, dtype=jnp.float64)
     u_gauss = jnp.asarray(sol.u_gauss, dtype=jnp.float64)
-    D = jnp.asarray(sol.problem.D, dtype=jnp.float64)
     weights = jnp.asarray(sol.problem.weights, dtype=jnp.float64)
     N = sol.problem.num_intervals
     m = sol.problem.num_gauss_points
 
     h = mesh[1:] - mesh[:-1]
-    U = jnp.concatenate([u_mesh[:, None, :], u_gauss], axis=1)
-    du_dt = jnp.einsum("mj,Njd->Nmd", D, U) / h[:, None, None]
+    du_dt = sol.problem.derivative_at_gauss(u_mesh, u_gauss, mesh)
     grad_norm2 = jnp.sum(du_dt**2, axis=-1)
 
     if beta > 0.0:

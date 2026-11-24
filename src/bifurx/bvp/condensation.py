@@ -5,7 +5,12 @@ from typing import TYPE_CHECKING, NamedTuple
 import jax
 import jax.numpy as jnp
 
-from bifurx.homotopy.bordered import BorderedOperatorSolver, BorderedSolution
+from bifurx.homotopy.bordered import (
+    BorderedOperatorSolver,
+    BorderedSolution,
+    safe_lu_factor,
+    safe_lu_solve,
+)
 
 if TYPE_CHECKING:
     from bifurx.bvp.collocation import CollocationProblem
@@ -105,11 +110,7 @@ def factor_cyclic_block_bidiagonal(
         P0_total = P0_fin + P_cur_fin
         M_red = jnp.block([[A_fin + B_fin, S_fin], [P0_total, D_fin]])
 
-    lu_red, piv_red = jax.scipy.linalg.lu_factor(M_red)
-    u_diag = jnp.abs(jnp.diag(lu_red))
-    use_lu_red = jnp.all(jnp.isfinite(lu_red)) & (
-        jnp.min(u_diag) > rcond * (jnp.max(u_diag) + 1e-30)
-    )
+    lu_red, piv_red, use_lu_red = safe_lu_factor(M_red, rcond=rcond)
     return CyclicBlockBidiagonalFactor(
         Q=Q,
         R=R,
@@ -133,11 +134,7 @@ def solve_cyclic_block_bidiagonal(
 
     if N == 1:
         rhs_red = jnp.concatenate([r_cont[0], g_border], axis=0)
-        y_red = jax.lax.cond(
-            cyc_fac.use_lu_red,
-            lambda: jax.scipy.linalg.lu_solve((cyc_fac.lu_red, cyc_fac.piv_red), rhs_red),
-            lambda: jnp.linalg.lstsq(cyc_fac.M_red, rhs_red, rcond=1e-12)[0],
-        )
+        y_red = safe_lu_solve(cyc_fac.M_red, cyc_fac.lu_red, cyc_fac.piv_red, cyc_fac.use_lu_red, rhs_red)
         return y_red[:n][None, :], y_red[n:]
 
     def _fwd_step(
@@ -159,11 +156,7 @@ def solve_cyclic_block_bidiagonal(
     )
 
     rhs_red = jnp.concatenate([r_fin, g_fin], axis=0)
-    y_red = jax.lax.cond(
-        cyc_fac.use_lu_red,
-        lambda: jax.scipy.linalg.lu_solve((cyc_fac.lu_red, cyc_fac.piv_red), rhs_red),
-        lambda: jnp.linalg.lstsq(cyc_fac.M_red, rhs_red, rcond=1e-12)[0],
-    )
+    y_red = safe_lu_solve(cyc_fac.M_red, cyc_fac.lu_red, cyc_fac.piv_red, cyc_fac.use_lu_red, rhs_red)
     u0 = y_red[:n]
     w = y_red[n:]
 
@@ -201,6 +194,49 @@ class CondensedCollocationFactor(NamedTuple):
     cyclic: CyclicBlockBidiagonalFactor
 
 
+def condense_local_blocks(
+    problem: CollocationProblem,
+    h: jax.Array,
+    T: jax.Array,
+    Ju_all: jax.Array,
+    *,
+    adjoint: bool = False,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Assemble and LU-condense per-interval collocation blocks for primal or adjoint BVPs.
+
+    Returns ``(lu_A, piv_A, K_all, M_k)`` where ``K_all`` maps interval mesh nodes to Gauss
+    collocation stages (``u_gauss,k = -K_k u_mesh,k + ...``) and ``M_k`` is the interval
+    transition matrix (``u_end,k = M_k u_mesh,k + ...``).
+    """
+    N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
+    D = jnp.asarray(problem.D, dtype=jnp.float64)
+    C = jnp.asarray(problem.C, dtype=jnp.float64)
+    eye_n = jnp.eye(n, dtype=jnp.float64)
+    eye_m = jnp.eye(m, dtype=jnp.float64)
+
+    if adjoint:
+        Ju_eff = jnp.swapaxes(Ju_all, -2, -1)
+        rhs_sign = 1.0
+    else:
+        Ju_eff = Ju_all
+        rhs_sign = -1.0
+
+    A_blocks = (D[None, :, 1:] / h[:, None, None])[:, :, :, None, None] * eye_n[
+        None, None, None, :, :
+    ] + (rhs_sign * T) * eye_m[None, :, :, None, None] * Ju_eff[:, :, None, :, :]
+    A_all = jnp.swapaxes(A_blocks, 2, 3).reshape(N, m * n, m * n)
+    B_all = ((D[None, :, 0] / h[:, None])[:, :, None, None] * eye_n[None, None, :, :]).reshape(
+        N, m * n, n
+    )
+
+    lu_A, piv_A = jax.vmap(jax.scipy.linalg.lu_factor)(A_all)
+    K_all = jax.vmap(lambda lu_k, piv_k, b_k: jax.scipy.linalg.lu_solve((lu_k, piv_k), b_k))(
+        lu_A, piv_A, B_all
+    )
+    M_k = C[0] * eye_n[None, :, :] - jnp.einsum("j,Njab->Nab", C[1:], K_all.reshape(N, m, n, n))
+    return lu_A, piv_A, K_all, M_k
+
+
 def _condense_collocation_blocks(
     problem: CollocationProblem,
     T: jax.Array,
@@ -218,30 +254,14 @@ def _condense_collocation_blocks(
     mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
     h = mesh_arr[1:] - mesh_arr[:-1]
     N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
-    D = jnp.asarray(problem.D, dtype=jnp.float64)
     C = jnp.asarray(problem.C, dtype=jnp.float64)
     weights = jnp.asarray(problem.weights, dtype=jnp.float64)
-    eye_n = jnp.eye(n, dtype=jnp.float64)
-    eye_m = jnp.eye(m, dtype=jnp.float64)
 
-    A_blocks = (D[None, :, 1:] / h[:, None, None])[:, :, :, None, None] * eye_n[
-        None, None, None, :, :
-    ] - T * eye_m[None, :, :, None, None] * Ju_all[:, :, None, :, :]
-    A_all = jnp.swapaxes(A_blocks, 2, 3).reshape(N, m * n, m * n)
-    B_all = ((D[None, :, 0] / h[:, None])[:, :, None, None] * eye_n[None, None, :, :]).reshape(
-        N, m * n, n
-    )
+    lu_A, piv_A, K_all, M_k = condense_local_blocks(problem, h, T, Ju_all, adjoint=False)
     q_sc = q_scalar.reshape(N, m * n)
-
-    lu_A, piv_A = jax.vmap(jax.scipy.linalg.lu_factor)(A_all)
-    K_all = jax.vmap(lambda lu_k, piv_k, b_k: jax.scipy.linalg.lu_solve((lu_k, piv_k), b_k))(
-        lu_A, piv_A, B_all
-    )
     gamma_T = jax.vmap(lambda lu_k, piv_k, q_k: jax.scipy.linalg.lu_solve((lu_k, piv_k), q_k))(
         lu_A, piv_A, q_sc
     )
-
-    M_k = C[0] * eye_n[None, :, :] - jnp.einsum("j,Njab->Nab", C[1:], K_all.reshape(N, m, n, n))
     s_T = jnp.einsum("j,Nja->Na", C[1:], gamma_T.reshape(N, m, n))
 
     phi = (h[:, None, None] * weights[None, :, None] * dot_u_ref).reshape(N, m * n)

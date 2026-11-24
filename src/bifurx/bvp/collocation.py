@@ -27,7 +27,11 @@ from bifurx.bvp.floquet import (
 )
 from bifurx.homotopy import BorderedOperatorSolver, compute_tangent, track_arclength_scan
 from bifurx.homotopy.corrector import correct_arclength_step
-from bifurx.options import CollocationOptions, ContinuationOptions
+from bifurx.options import (
+    CollocationOptions,
+    ContinuationOptions,
+    resolve_collocation_options,
+)
 
 
 def _gauss_legendre_nodes(m: int) -> tuple[jax.Array, jax.Array]:
@@ -229,24 +233,42 @@ class CollocationProblem:
             jnp.squeeze(X[-1]),
         )
 
-    def residual(
+    def derivative_at_gauss(
+        self, u_mesh: jax.Array, u_gauss: jax.Array, mesh: jax.Array
+    ) -> jax.Array:
+        """Evaluate collocation polynomial time derivative du/dt at all Gauss points."""
+        h = mesh[1:] - mesh[:-1]
+        U = jnp.concatenate([u_mesh[:, None, :], u_gauss], axis=1)
+        return jnp.einsum("mj,Njd->Nmd", self.D, U) / h[:, None, None]
+
+    def make_phase_chart_fn(
+        self, mesh: jax.Array
+    ) -> Callable[[jax.Array, jax.Array], tuple[jax.Array, jax.Array]]:
+        """Build a chart callback returning ``(dot_u_ref, u_ref_gauss)`` for integral phase anchor."""
+        mesh_arr = jnp.asarray(mesh, dtype=jnp.float64)
+
+        def chart_fn(X_ref: jax.Array, _p: jax.Array) -> tuple[jax.Array, jax.Array]:
+            u_ref_m, u_ref_g, _ = self.unpack_vars(X_ref)
+            return self.derivative_at_gauss(u_ref_m, u_ref_g, mesh_arr), u_ref_g
+
+        return chart_fn
+
+    def _eval_residual_from_rhs(
         self,
-        X: jax.Array,
-        p: float | jax.Array,
+        u_mesh: jax.Array,
+        u_gauss: jax.Array,
+        T: jax.Array,
+        f_val: jax.Array,
         mesh: jax.Array,
         u_ref_mesh: jax.Array | None = None,
         u_ref_gauss: jax.Array | None = None,
         dot_u_ref: jax.Array | None = None,
     ) -> jax.Array:
-        """Evaluate collocation BVP residual vector of dimension N*(m+1)*dim + 1."""
-        u_mesh, u_gauss, T = self.unpack_vars(X)
+        """Assemble collocation, continuity, and integral phase residuals from pre-evaluated RHS."""
         h = mesh[1:] - mesh[:-1]
-
-        p_val = jnp.squeeze(p) if jnp.ndim(p) > 0 else p
         U = jnp.concatenate([u_mesh[:, None, :], u_gauss], axis=1)
 
         du_dt = jnp.einsum("mj,Njd->Nmd", self.D, U) / h[:, None, None]
-        f_val = jax.vmap(jax.vmap(lambda u: self.fn(u, p_val, **self.kwargs)))(u_gauss)
         res_coll = (du_dt - T * f_val).ravel()
 
         u_next = jnp.roll(u_mesh, -1, axis=0)
@@ -258,8 +280,7 @@ class CollocationProblem:
         if dot_u_ref is None:
             ref_mesh = u_mesh if u_ref_mesh is None else u_ref_mesh
             ref_gauss = u_gauss if u_ref_gauss is None else u_ref_gauss
-            U_ref = jnp.concatenate([ref_mesh[:, None, :], ref_gauss], axis=1)
-            dot_u_ref_val = jnp.einsum("mj,Njd->Nmd", self.D, U_ref) / h[:, None, None]
+            dot_u_ref_val = self.derivative_at_gauss(ref_mesh, ref_gauss, mesh)
         else:
             dot_u_ref_val = dot_u_ref
         u_phase = u_gauss - u_ref_gauss if u_ref_gauss is not None else u_gauss
@@ -267,6 +288,71 @@ class CollocationProblem:
         phase_val = jnp.sum(h[:, None] * self.weights[None, :] * inner_prod)
 
         return jnp.concatenate([res_coll, res_cont, jnp.atleast_1d(phase_val)])
+
+    def residual(
+        self,
+        X: jax.Array,
+        p: float | jax.Array,
+        mesh: jax.Array,
+        u_ref_mesh: jax.Array | None = None,
+        u_ref_gauss: jax.Array | None = None,
+        dot_u_ref: jax.Array | None = None,
+    ) -> jax.Array:
+        """Evaluate collocation BVP residual vector of dimension N*(m+1)*dim + 1."""
+        u_mesh, u_gauss, T = self.unpack_vars(X)
+        p_val = jnp.squeeze(p) if jnp.ndim(p) > 0 else p
+        f_val = jax.vmap(jax.vmap(lambda u: self.fn(u, p_val, **self.kwargs)))(u_gauss)
+        return self._eval_residual_from_rhs(
+            u_mesh,
+            u_gauss,
+            T,
+            f_val,
+            mesh,
+            u_ref_mesh=u_ref_mesh,
+            u_ref_gauss=u_ref_gauss,
+            dot_u_ref=dot_u_ref,
+        )
+
+
+def _hopf_harmonic_seed(
+    problem: CollocationProblem,
+    u_h: jax.Array,
+    p_h: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Extract normalized Hopf eigenpair and unit-amplitude harmonic profiles on uniform mesh."""
+    jac_u_fn = jax.jacobian(lambda u_, p_: problem.fn(u_, p_, **problem.kwargs), argnums=0)
+    Ju = jac_u_fn(u_h, p_h)
+    eigs, vecs = jnp.linalg.eig(Ju)
+    _, leading_real, omega = extract_leading_hopf_pair(Ju, eigs=eigs)
+    target_eig = leading_real + 1j * omega
+    T0 = 2.0 * jnp.pi / omega
+    vec = vecs[:, jnp.argmin(jnp.abs(eigs - target_eig))]
+
+    v_r, v_i = jnp.real(vec), jnp.imag(vec)
+    norm_v = jnp.sqrt(jnp.dot(v_r, v_r) + jnp.dot(v_i, v_i))
+    v_r, v_i = v_r / norm_v, v_i / norm_v
+
+    N = problem.num_intervals
+    mesh = jnp.linspace(0.0, 1.0, N + 1, dtype=jnp.float64)
+    rho = jnp.asarray(problem.rho, dtype=jnp.float64)
+    t_mesh = mesh[:-1]
+    theta_mesh = 2.0 * jnp.pi * t_mesh
+    du_mesh = (
+        jnp.cos(theta_mesh)[:, None] * v_r[None, :] - jnp.sin(theta_mesh)[:, None] * v_i[None, :]
+    )
+
+    hk = mesh[1:] - mesh[:-1]
+    t_gauss = t_mesh[:, None] + hk[:, None] * rho[None, :]
+    theta_gauss = 2.0 * jnp.pi * t_gauss
+    du_gauss = (
+        jnp.cos(theta_gauss)[:, :, None] * v_r[None, None, :]
+        - jnp.sin(theta_gauss)[:, :, None] * v_i[None, None, :]
+    )
+    dot_du_gauss = (
+        -2.0 * jnp.pi * jnp.sin(theta_gauss)[:, :, None] * v_r[None, None, :]
+        - 2.0 * jnp.pi * jnp.cos(theta_gauss)[:, :, None] * v_i[None, None, :]
+    )
+    return Ju, eigs, omega, T0, mesh, du_mesh, du_gauss, dot_du_gauss
 
 
 def initialize_from_hopf(
@@ -280,20 +366,13 @@ def initialize_from_hopf(
     options: CollocationOptions | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Construct an initial periodic orbit guess near a Hopf bifurcation in pure JAX."""
-    base_eps = options.eps if options is not None else CollocationOptions().eps
-    eps_val = jnp.squeeze(jnp.asarray(base_eps if eps is None else eps, dtype=jnp.float64))
+    opts = resolve_collocation_options(options, eps=eps)
+    eps_val = jnp.squeeze(jnp.asarray(opts.eps, dtype=jnp.float64))
 
     u_h = jnp.asarray(u_hopf, dtype=jnp.float64)
     p_h = jnp.squeeze(jnp.asarray(p_hopf, dtype=jnp.float64))
 
-    jac_u_fn = jax.jacobian(lambda u_, p_: problem.fn(u_, p_, **problem.kwargs), argnums=0)
-    Ju = jac_u_fn(u_h, p_h)
-    eigs, vecs = jnp.linalg.eig(Ju)
-
-    _, leading_real, omega = extract_leading_hopf_pair(Ju, eigs=eigs)
-    target_eig = leading_real + 1j * omega
-    T0 = 2.0 * jnp.pi / omega
-    vec = vecs[:, jnp.argmin(jnp.abs(eigs - target_eig))]
+    Ju, eigs, omega, T0, mesh, du_mesh, du_gauss, _ = _hopf_harmonic_seed(problem, u_h, p_h)
 
     complex_mask = jnp.abs(jnp.imag(eigs)) > 1e-4 * (1.0 + jnp.abs(eigs))
     crit_mask = complex_mask & (jnp.abs(jnp.real(eigs)) < 1e-2)
@@ -315,32 +394,14 @@ def initialize_from_hopf(
         lambda: None,
     )
 
-    v_r, v_i = jnp.real(vec), jnp.imag(vec)
-    norm_v = jnp.sqrt(jnp.dot(v_r, v_r) + jnp.dot(v_i, v_i))
-    v_r, v_i = v_r / norm_v, v_i / norm_v
-
-    N = problem.num_intervals
-    mesh = jnp.linspace(0.0, 1.0, N + 1, dtype=jnp.float64)
-    rho = jnp.asarray(problem.rho, dtype=jnp.float64)
-
-    t_mesh = mesh[:-1]
-    theta_mesh = 2.0 * jnp.pi * t_mesh
-    u_mesh = u_h[None, :] + eps_val * (
-        jnp.cos(theta_mesh)[:, None] * v_r[None, :] - jnp.sin(theta_mesh)[:, None] * v_i[None, :]
-    )
-
-    hk = mesh[1:] - mesh[:-1]
-    t_gauss = t_mesh[:, None] + hk[:, None] * rho[None, :]
-    theta_gauss = 2.0 * jnp.pi * t_gauss
-    u_gauss = u_h[None, None, :] + eps_val * (
-        jnp.cos(theta_gauss)[:, :, None] * v_r[None, None, :]
-        - jnp.sin(theta_gauss)[:, :, None] * v_i[None, None, :]
-    )
+    u_mesh = u_h[None, :] + eps_val * du_mesh
+    u_gauss = u_h[None, None, :] + eps_val * du_gauss
 
     if isinstance(direction, str):
         if direction != "auto":
             msg = f"Unknown direction: {direction}. Pass a float or 'auto'."
             raise ValueError(msg)
+        jac_u_fn = jax.jacobian(lambda u_, p_: problem.fn(u_, p_, **problem.kwargs), argnums=0)
         l1 = compute_first_lyapunov_coefficient(
             lambda u_, p_: problem.fn(u_, p_, **problem.kwargs),
             u_h,
@@ -396,50 +457,25 @@ def branch_from_hopf(
     `(u(t), T, p)` at arclength distance `ds`. Automatically handles both supercritical
     and subcritical Hopf bifurcations without fixed-parameter tuning.
     """
-    base_opts = CollocationOptions() if options is None else options
-    tol_val = base_opts.tol if tol is None else tol
-    max_iters_val = base_opts.max_iters if max_iters is None else int(max_iters)
-    min_amp_val = base_opts.min_amplitude if min_amplitude is None else min_amplitude
-    t_w = base_opts.period_weight if period_weight is None else period_weight
+    opts = resolve_collocation_options(
+        options,
+        tol=tol,
+        max_iters=max_iters,
+        min_amplitude=min_amplitude,
+        period_weight=period_weight,
+    )
+    tol_val = opts.tol
+    max_iters_val = opts.max_iters
+    min_amp_val = opts.min_amplitude
+    t_w = opts.period_weight
     p_w = param_weight
     ds_val = jnp.squeeze(jnp.asarray(ds, dtype=jnp.float64))
 
     u_h = jnp.asarray(u_hopf, dtype=jnp.float64)
     p_h = jnp.squeeze(jnp.asarray(p_hopf, dtype=jnp.float64))
 
-    jac_u_fn = jax.jacobian(lambda u_, p_: problem.fn(u_, p_, **problem.kwargs), argnums=0)
-    Ju = jac_u_fn(u_h, p_h)
-    eigs, vecs = jnp.linalg.eig(Ju)
-    _, leading_real, omega = extract_leading_hopf_pair(Ju, eigs=eigs)
-    target_eig = leading_real + 1j * omega
-    T0 = 2.0 * jnp.pi / omega
-    vec = vecs[:, jnp.argmin(jnp.abs(eigs - target_eig))]
-
-    v_r, v_i = jnp.real(vec), jnp.imag(vec)
-    norm_v = jnp.sqrt(jnp.dot(v_r, v_r) + jnp.dot(v_i, v_i))
-    v_r, v_i = v_r / norm_v, v_i / norm_v
-
+    _, _, _, T0, mesh, du_mesh, du_gauss, dot_u_ref = _hopf_harmonic_seed(problem, u_h, p_h)
     N, m, n = problem.num_intervals, problem.num_gauss_points, problem.dim
-    mesh = jnp.linspace(0.0, 1.0, N + 1, dtype=jnp.float64)
-    rho = jnp.asarray(problem.rho, dtype=jnp.float64)
-    hk = mesh[1:] - mesh[:-1]
-
-    t_mesh = mesh[:-1]
-    theta_mesh = 2.0 * jnp.pi * t_mesh
-    du_mesh = (
-        jnp.cos(theta_mesh)[:, None] * v_r[None, :] - jnp.sin(theta_mesh)[:, None] * v_i[None, :]
-    )
-
-    t_gauss = t_mesh[:, None] + hk[:, None] * rho[None, :]
-    theta_gauss = 2.0 * jnp.pi * t_gauss
-    du_gauss = (
-        jnp.cos(theta_gauss)[:, :, None] * v_r[None, None, :]
-        - jnp.sin(theta_gauss)[:, :, None] * v_i[None, None, :]
-    )
-    dot_u_ref = (
-        -2.0 * jnp.pi * jnp.sin(theta_gauss)[:, :, None] * v_r[None, None, :]
-        - 2.0 * jnp.pi * jnp.cos(theta_gauss)[:, :, None] * v_i[None, None, :]
-    )
 
     u_mesh_eq = jnp.broadcast_to(u_h[None, :], (N, n))
     u_gauss_eq = jnp.broadcast_to(u_h[None, None, :], (N, m, n))
@@ -511,10 +547,12 @@ def solve_periodic_orbit(
     options: CollocationOptions | None = None,
 ) -> PeriodicOrbitResult:
     """Solve for a periodic orbit (u(t), T) using pure-JAX Gauss-Legendre collocation."""
-    base_opts = CollocationOptions() if options is None else options
-    tol_val = base_opts.tol if tol is None else tol
-    max_iters_val = base_opts.max_iters if max_iters is None else max_iters
-    min_amp_val = base_opts.min_amplitude if min_amplitude is None else min_amplitude
+    opts = resolve_collocation_options(
+        options, tol=tol, max_iters=max_iters, min_amplitude=min_amplitude
+    )
+    tol_val = opts.tol
+    max_iters_val = opts.max_iters
+    min_amp_val = opts.min_amplitude
 
     N = problem.num_intervals
     n_mesh = N * problem.dim
@@ -548,9 +586,7 @@ def solve_periodic_orbit(
     p_arr = jnp.squeeze(jnp.asarray(p, dtype=jnp.float64))
     T_init_arr = jnp.squeeze(jnp.asarray(T_init, dtype=jnp.float64))
     X_init = problem.pack_vars(u_mesh_arr, u_gauss_arr, T_init_arr)
-    h_arr = mesh_arr[1:] - mesh_arr[:-1]
-    U_ref = jnp.concatenate([u_ref_mesh_arr[:, None, :], u_ref_gauss_arr], axis=1)
-    dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_arr[:, None, None]
+    dot_u_ref = problem.derivative_at_gauss(u_ref_mesh_arr, u_ref_gauss_arr, mesh_arr)
 
     def eval_res(x_vec: jax.Array) -> jax.Array:
         return problem.residual(
@@ -782,12 +818,7 @@ def continue_periodic_orbit(
         Callable[[jax.Array, jax.Array, jax.Array, Any, Any], Any] | None,
     ]:
         h_seg = mesh_seg[1:] - mesh_seg[:-1]
-
-        def chart_fn(X_ref: jax.Array, _p: jax.Array) -> tuple[jax.Array, jax.Array]:
-            u_ref_m, u_ref_g, _ = problem.unpack_vars(X_ref)
-            U_ref = jnp.concatenate([u_ref_m[:, None, :], u_ref_g], axis=1)
-            dot_u_ref = jnp.einsum("mj,Njd->Nmd", problem.D, U_ref) / h_seg[:, None, None]
-            return dot_u_ref, u_ref_g
+        chart_fn = problem.make_phase_chart_fn(mesh_seg)
 
         def res_fn(X: jax.Array, p_val: jax.Array, chart: tuple[jax.Array, jax.Array]) -> jax.Array:
             dot_u_ref, u_ref_g = chart

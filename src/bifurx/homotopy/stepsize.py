@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
-from typing import Any, ClassVar, Self
+from typing import ClassVar
 
 import jax
 import jax.numpy as jnp
 
+from bifurx.homotopy.pytree import PyTreeOptionsBase
+
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class TrackerParameters:
+class TrackerParameters(PyTreeOptionsBase):
     """Theory-grounded adaptive step-size and contraction control parameters (Timme 2020)."""
 
     _child_fields: ClassVar[tuple[str, ...]] = (
@@ -28,19 +29,6 @@ class TrackerParameters:
     beta_tau: float = 0.4
     max_growth_factor: float = 2.0
     reject_fallback_factor: float = 0.25
-
-    def replace(self, **changes: Any) -> Self:
-        """Return a copy of tracker parameters with updated fields."""
-        return dataclasses.replace(self, **changes)
-
-    def tree_flatten(self) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-        children = tuple(getattr(self, f) for f in self._child_fields)
-        return children, ()
-
-    @classmethod
-    def tree_unflatten(cls, _aux_data: tuple[Any, ...], children: tuple[Any, ...]) -> Self:
-        kwargs = dict(zip(cls._child_fields, children, strict=True))
-        return cls(**kwargs)
 
 
 def kantorovich_h(a: float | jax.Array) -> jax.Array:

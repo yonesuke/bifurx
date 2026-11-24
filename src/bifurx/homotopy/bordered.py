@@ -59,6 +59,33 @@ def build_bordered_matrix(
     return jnp.block([[A, b.reshape(-1, 1)], [c.reshape(1, -1), jnp.atleast_2d(d)]])
 
 
+def safe_lu_factor(
+    M: jax.Array,
+    rcond: float = 1e-12,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """LU-factorize a square matrix and flag whether its diagonal is well-conditioned."""
+    lu, piv = jax.scipy.linalg.lu_factor(M)
+    u_diag = jnp.abs(jnp.diag(lu))
+    use_lu = jnp.all(jnp.isfinite(lu)) & (jnp.min(u_diag) > rcond * (jnp.max(u_diag) + 1e-30))
+    return lu, piv, use_lu
+
+
+def safe_lu_solve(
+    M: jax.Array,
+    lu: jax.Array,
+    piv: jax.Array,
+    use_lu: jax.Array,
+    rhs: jax.Array,
+    rcond: float = 1e-12,
+) -> jax.Array:
+    """Solve ``M x = rhs`` using precomputed LU when well-conditioned, else least squares."""
+    return jax.lax.cond(
+        use_lu,
+        lambda: jax.scipy.linalg.lu_solve((lu, piv), rhs),
+        lambda: jnp.linalg.lstsq(M, rhs, rcond=rcond)[0],
+    )
+
+
 def factor_bordered_matrix(
     A: jax.Array,
     b: jax.Array,
@@ -68,10 +95,7 @@ def factor_bordered_matrix(
 ) -> BorderedFactorization:
     """Factorize a bordered matrix once for solving multiple right-hand sides."""
     M = build_bordered_matrix(A, b, c, d)
-    lu, piv = jax.scipy.linalg.lu_factor(M)
-    u_diag = jnp.abs(jnp.diag(lu))
-    u_max = jnp.max(u_diag)
-    use_lu = jnp.all(jnp.isfinite(lu)) & (jnp.min(u_diag) > rcond * (u_max + 1e-30))
+    lu, piv, use_lu = safe_lu_factor(M, rcond=rcond)
     return BorderedFactorization(M=M, lu=lu, piv=piv, use_lu=use_lu)
 
 
@@ -84,11 +108,7 @@ def solve_factored_bordered(
     """Solve M [x, y]^T = [f, g]^T reusing a `BorderedFactorization`."""
     n = fac.M.shape[0] - 1
     r = jnp.concatenate([f.ravel(), jnp.atleast_1d(g)])
-    z = jax.lax.cond(
-        fac.use_lu,
-        lambda: jax.scipy.linalg.lu_solve((fac.lu, fac.piv), r),
-        lambda: jnp.linalg.lstsq(fac.M, r, rcond=rcond)[0],
-    )
+    z = safe_lu_solve(fac.M, fac.lu, fac.piv, fac.use_lu, r, rcond=rcond)
     return BorderedSolution(x=z[:n], y=jnp.squeeze(z[n]))
 
 

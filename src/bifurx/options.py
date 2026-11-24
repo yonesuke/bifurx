@@ -1,39 +1,16 @@
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar
 
 import jax
 
-from bifurx.homotopy import TrackerParameters, WeightedNormOptions
-
-
-class _OptionsBase:
-    """Shared PyTree serialization and immutable update methods for option dataclasses."""
-
-    _child_fields: ClassVar[tuple[str, ...]] = ()
-    _aux_fields: ClassVar[tuple[str, ...]] = ()
-
-    def replace(self, **changes: Any) -> Self:
-        """Return a copy of the options with updated fields."""
-        return dataclasses.replace(self, **changes)  # type: ignore[arg-type]
-
-    def tree_flatten(self) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-        children = tuple(getattr(self, f) for f in self._child_fields)
-        aux_data = tuple(getattr(self, f) for f in self._aux_fields)
-        return children, aux_data
-
-    @classmethod
-    def tree_unflatten(cls, aux_data: tuple[Any, ...], children: tuple[Any, ...]) -> Self:
-        kwargs = dict(zip(cls._child_fields, children, strict=True))
-        kwargs.update(zip(cls._aux_fields, aux_data, strict=True))
-        return cls(**kwargs)
+from bifurx.homotopy import PyTreeOptionsBase, TrackerParameters, WeightedNormOptions
 
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class NewtonOptions(_OptionsBase):
+class NewtonOptions(PyTreeOptionsBase):
     """Options for bordered Newton corrector iterations."""
 
     _child_fields: ClassVar[tuple[str, ...]] = ("tol", "step_tol")
@@ -47,7 +24,7 @@ class NewtonOptions(_OptionsBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class ContinuationOptions(_OptionsBase):
+class ContinuationOptions(PyTreeOptionsBase):
     """Options for pseudo-arclength numerical continuation."""
 
     _child_fields: ClassVar[tuple[str, ...]] = (
@@ -85,7 +62,7 @@ class ContinuationOptions(_OptionsBase):
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class CollocationOptions(_OptionsBase):
+class CollocationOptions(PyTreeOptionsBase):
     """Options for boundary value problem (BVP) orthogonal collocation."""
 
     _child_fields: ClassVar[tuple[str, ...]] = ("eps", "tol", "min_amplitude", "period_weight")
@@ -178,3 +155,32 @@ def resolve_continuation_options(
         if v is not None
     }
     return base_opts.replace(newton=resolved_newton, **cont_updates)
+
+
+def resolve_collocation_options(
+    options: CollocationOptions | None = None,
+    *,
+    num_intervals: int | None = None,
+    num_gauss_points: int | None = None,
+    eps: Any = None,
+    tol: Any = None,
+    max_iters: int | None = None,
+    min_amplitude: Any = None,
+    period_weight: Any = None,
+) -> CollocationOptions:
+    """Resolve CollocationOptions from an optional base instance and explicit overrides."""
+    base_opts = CollocationOptions() if options is None else options
+    updates = {
+        k: v
+        for k, v in (
+            ("num_intervals", int(num_intervals) if num_intervals is not None else None),
+            ("num_gauss_points", int(num_gauss_points) if num_gauss_points is not None else None),
+            ("eps", eps),
+            ("tol", tol),
+            ("max_iters", int(max_iters) if max_iters is not None else None),
+            ("min_amplitude", min_amplitude),
+            ("period_weight", period_weight),
+        )
+        if v is not None
+    }
+    return base_opts.replace(**updates) if updates else base_opts
