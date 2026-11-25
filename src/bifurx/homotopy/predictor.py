@@ -49,9 +49,7 @@ def estimate_pade_trust_region(
     r2 = jnp.sqrt(n2)
     r3 = jnp.cbrt(n3)
     r = jnp.maximum(n1, jnp.maximum(r2, r3))
-    has_pole = (
-        jnp.isfinite(r) & (r > 0.0) & (r2 > _PADE_R2_TOL * r) & (r3 > _PADE_R3_TOL * r)
-    )
+    has_pole = jnp.isfinite(r) & (r > 0.0) & (r2 > _PADE_R2_TOL * r) & (r3 > _PADE_R3_TOL * r)
     return jnp.where(has_pole, n2 / jnp.where(has_pole, n3, 1.0), jnp.inf)
 
 

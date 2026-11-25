@@ -134,7 +134,9 @@ def solve_cyclic_block_bidiagonal(
 
     if N == 1:
         rhs_red = jnp.concatenate([r_cont[0], g_border], axis=0)
-        y_red = safe_lu_solve(cyc_fac.M_red, cyc_fac.lu_red, cyc_fac.piv_red, cyc_fac.use_lu_red, rhs_red)
+        y_red = safe_lu_solve(
+            cyc_fac.M_red, cyc_fac.lu_red, cyc_fac.piv_red, cyc_fac.use_lu_red, rhs_red
+        )
         return y_red[:n][None, :], y_red[n:]
 
     def _fwd_step(
@@ -156,7 +158,9 @@ def solve_cyclic_block_bidiagonal(
     )
 
     rhs_red = jnp.concatenate([r_fin, g_fin], axis=0)
-    y_red = safe_lu_solve(cyc_fac.M_red, cyc_fac.lu_red, cyc_fac.piv_red, cyc_fac.use_lu_red, rhs_red)
+    y_red = safe_lu_solve(
+        cyc_fac.M_red, cyc_fac.lu_red, cyc_fac.piv_red, cyc_fac.use_lu_red, rhs_red
+    )
     u0 = y_red[:n]
     w = y_red[n:]
 

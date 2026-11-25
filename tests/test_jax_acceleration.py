@@ -302,9 +302,7 @@ def test_pure_jax_jit_tangent_hopf_and_iprc():
     assert float(orb_hopf.amplitude) > 1e-3
 
     # 4. compute_iprc with compute_zero_crossings=False under jax.jit
-    iprc_jit = jax.jit(
-        lambda orb: compute_iprc(orb, compute_zero_crossings=False)
-    )(orb_hopf)
+    iprc_jit = jax.jit(lambda orb: compute_iprc(orb, compute_zero_crossings=False))(orb_hopf)
     assert iprc_jit.Z.shape == (16, 2)
     assert bool(jnp.all(jnp.isfinite(iprc_jit.Z)))
     assert iprc_jit.zero_crossings == []

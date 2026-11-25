@@ -80,9 +80,7 @@ def _linear_consistency_ok(
     arc_scale = (
         jnp.sum(jnp.abs(c_vec) * weights_arr[:n]) + jnp.abs(d_val) * weights_arr[-1]
     ) * step_norm_w
-    arc_lin_ok = (
-        jnp.abs(arc_lin) <= _LIN_RES_FACTOR * jnp.abs(arc_res) + _LIN_SCALE_TOL * arc_scale
-    )
+    arc_lin_ok = jnp.abs(arc_lin) <= _LIN_RES_FACTOR * jnp.abs(arc_res) + _LIN_SCALE_TOL * arc_scale
     return (
         jnp.isfinite(step_norm_w)
         & jnp.all(jnp.isfinite(du))
