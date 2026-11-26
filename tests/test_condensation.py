@@ -6,6 +6,7 @@ import pytest
 
 from bifurx.bvp.collocation import (
     CollocationProblem,
+    redistribute_mesh,
     solve_periodic_orbit,
 )
 from bifurx.bvp.condensation import (
@@ -18,7 +19,6 @@ from bifurx.bvp.condensation import (
     solve_condensed_collocation,
     solve_cyclic_block_bidiagonal,
 )
-from bifurx.bvp.mesh import redistribute_mesh
 from bifurx.homotopy.bordered import solve_bordered_system
 
 

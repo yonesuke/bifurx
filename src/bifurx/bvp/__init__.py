@@ -5,6 +5,7 @@ from bifurx.bvp.collocation import (
     continue_periodic_orbit,
     initialize_from_hopf,
     periodic_orbit_arclength_weights,
+    redistribute_mesh,
     solve_periodic_orbit,
 )
 from bifurx.bvp.condensation import (
@@ -23,7 +24,6 @@ from bifurx.bvp.floquet import (
     periodic_real_schur,
     periodic_schur_eigenvalues,
 )
-from bifurx.bvp.mesh import redistribute_mesh
 from bifurx.bvp.periodic_bifurcations import (
     branch_from_period_doubling,
     refine_periodic_bifurcation,

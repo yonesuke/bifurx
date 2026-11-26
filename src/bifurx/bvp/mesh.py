@@ -3,10 +3,10 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from bifurx.bvp.collocation import PeriodicOrbitResult, solve_periodic_orbit
+from bifurx.bvp.problem import PeriodicOrbitResult
 
 
-def _equidistribute_mesh(
+def equidistribute_mesh(
     sol: PeriodicOrbitResult,
     alpha: float = 1.0,
     beta: float = 0.0,
@@ -52,21 +52,11 @@ def _equidistribute_mesh(
     return jnp.where(is_valid, t_new, mesh)
 
 
-def redistribute_mesh(
+def interpolate_orbit_to_mesh(
     sol: PeriodicOrbitResult,
-    alpha: float = 1.0,
-    beta: float = 0.0,
-    damping: float = 0.7,
-    p: float | jax.Array = 0.0,
-    re_solve: bool = True,
-    tol: float = 1e-8,
-    max_iters: int = 15,
-    min_step_ratio: float = 1e-4,
-) -> PeriodicOrbitResult:
-    """Adaptively redistribute collocation mesh and re-solve orbit on the new mesh in pure JAX."""
-    new_mesh = _equidistribute_mesh(
-        sol, alpha=alpha, beta=beta, damping=damping, min_step_ratio=min_step_ratio
-    )
+    new_mesh: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Interpolate an existing periodic orbit solution onto ``new_mesh``."""
     N = sol.problem.num_intervals
     m = sol.problem.num_gauss_points
     n = sol.problem.dim
@@ -76,28 +66,4 @@ def redistribute_mesh(
     hk = new_mesh[1:] - new_mesh[:-1]
     t_gauss = (new_mesh[:-1, None] + hk[:, None] * rho[None, :]).ravel()
     u_gauss_new = sol.evaluate(t_gauss).reshape(N, m, n)
-
-    if not re_solve:
-        p_val = sol.p if sol.p is not None else jnp.asarray(p, dtype=jnp.float64)
-        return PeriodicOrbitResult(
-            mesh=new_mesh,
-            u_mesh=u_mesh_new,
-            u_gauss=u_gauss_new,
-            period=sol.period,
-            converged=sol.converged,
-            iterations=jnp.int32(0),
-            residual_norm=sol.residual_norm,
-            problem=sol.problem,
-            p=p_val,
-        )
-
-    return solve_periodic_orbit(
-        problem=sol.problem,
-        u_mesh_init=u_mesh_new,
-        T_init=sol.period,
-        p=p,
-        mesh=new_mesh,
-        u_gauss_init=u_gauss_new,
-        tol=tol,
-        max_iters=max_iters,
-    )
+    return u_mesh_new, u_gauss_new

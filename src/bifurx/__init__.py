@@ -26,10 +26,10 @@ from bifurx.bvp.collocation import (
     branch_from_hopf,
     continue_periodic_orbit,
     initialize_from_hopf,
+    redistribute_mesh,
     solve_periodic_orbit,
 )
 from bifurx.bvp.floquet import compute_floquet_multipliers
-from bifurx.bvp.mesh import redistribute_mesh
 from bifurx.bvp.periodic_bifurcations import (
     branch_from_period_doubling,
     refine_periodic_bifurcation,

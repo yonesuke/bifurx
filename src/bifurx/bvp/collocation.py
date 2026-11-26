@@ -24,6 +24,7 @@ from bifurx.bvp.floquet import (
     monodromy_condensation_raw,
     monodromy_factors_condensation,
 )
+from bifurx.bvp.mesh import equidistribute_mesh, interpolate_orbit_to_mesh
 from bifurx.bvp.problem import (
     CollocationProblem,
     PeriodicOrbitResult,
@@ -753,7 +754,6 @@ def continue_periodic_orbit(
 
         cur_tau_raw = scan_res.tangents[last_idx]
         cur_ds = max(float(scan_res.step_sizes[last_idx]), dp_min_val)
-        from bifurx.bvp.mesh import redistribute_mesh
 
         remeshed = redistribute_mesh(
             last_orb,
@@ -787,3 +787,46 @@ def continue_periodic_orbit(
                 results[k] = results[k]._replace(bifurcations=tuple(detected))
 
     return results
+
+
+def redistribute_mesh(
+    sol: PeriodicOrbitResult,
+    alpha: float = 1.0,
+    beta: float = 0.0,
+    damping: float = 0.7,
+    p: float | jax.Array = 0.0,
+    re_solve: bool = True,
+    tol: float = 1e-8,
+    max_iters: int = 15,
+    min_step_ratio: float = 1e-4,
+) -> PeriodicOrbitResult:
+    """Adaptively redistribute collocation mesh and re-solve orbit on the new mesh in pure JAX."""
+    new_mesh = equidistribute_mesh(
+        sol, alpha=alpha, beta=beta, damping=damping, min_step_ratio=min_step_ratio
+    )
+    u_mesh_new, u_gauss_new = interpolate_orbit_to_mesh(sol, new_mesh)
+
+    if not re_solve:
+        p_val = sol.p if sol.p is not None else jnp.asarray(p, dtype=jnp.float64)
+        return PeriodicOrbitResult(
+            mesh=new_mesh,
+            u_mesh=u_mesh_new,
+            u_gauss=u_gauss_new,
+            period=sol.period,
+            converged=sol.converged,
+            iterations=jnp.int32(0),
+            residual_norm=sol.residual_norm,
+            problem=sol.problem,
+            p=p_val,
+        )
+
+    return solve_periodic_orbit(
+        problem=sol.problem,
+        u_mesh_init=u_mesh_new,
+        T_init=sol.period,
+        p=p,
+        mesh=new_mesh,
+        u_gauss_init=u_gauss_new,
+        tol=tol,
+        max_iters=max_iters,
+    )
