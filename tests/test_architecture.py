@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import graphlib
 import hashlib
 import pathlib
 import sys
@@ -228,3 +229,66 @@ def test_no_duplicate_definitions() -> None:
 
     assert not dup_names, f"Duplicate top-level definitions found: {dup_names}"
     assert not dup_bodies, f"Structurally duplicate functions found: {list(dup_bodies.values())}"
+
+
+def _path_to_module(path: pathlib.Path) -> str:
+    rel = path.relative_to(SRC_ROOT.parent).with_suffix("")
+    parts = list(rel.parts)
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _resolve_internal_imports(
+    file_path: pathlib.Path,
+    tree: ast.AST,
+    known_modules: set[str],
+) -> set[str]:
+    """Collect all internal `bifurx` module dependencies (runtime, local, and TYPE_CHECKING)."""
+    mod_name = _path_to_module(file_path)
+    is_pkg = file_path.name == "__init__.py"
+    pkg_parts = mod_name.split(".") if is_pkg else mod_name.split(".")[:-1]
+    deps: set[str] = set()
+
+    def _add_target(candidate: str) -> None:
+        if candidate in known_modules and candidate != mod_name:
+            deps.add(candidate)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                _add_target(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > 0:
+                base_parts = pkg_parts[: len(pkg_parts) - (node.level - 1)]
+                base = ".".join(base_parts)
+                target = f"{base}.{node.module}" if node.module else base
+            else:
+                target = node.module or ""
+
+            if not target.startswith("bifurx"):
+                continue
+
+            _add_target(target)
+            for alias in node.names:
+                _add_target(f"{target}.{alias.name}")
+
+    return deps
+
+
+def test_internal_import_graph_is_dag() -> None:
+    """Verify internal module imports across `src/bifurx/` form a strict DAG (zero cycles)."""
+    src_files = _iter_py_files(SRC_ROOT)
+    known_modules = {_path_to_module(p) for p in src_files}
+    graph: dict[str, set[str]] = {}
+
+    for path in src_files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        mod = _path_to_module(path)
+        graph[mod] = _resolve_internal_imports(path, tree, known_modules)
+
+    try:
+        list(graphlib.TopologicalSorter(graph).static_order())
+    except graphlib.CycleError as exc:
+        cycle = " -> ".join(exc.args[1])
+        raise AssertionError(f"Circular import detected in src/bifurx/: {cycle}") from exc
