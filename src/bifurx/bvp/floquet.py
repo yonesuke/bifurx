@@ -1,20 +1,16 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import jax
 import jax.numpy as jnp
 
 from bifurx.bvp.condensation import condense_local_blocks
+from bifurx.bvp.problem import CollocationProblem, PeriodicOrbitResult
 
 _SPLIT_2X2_MAX_ITERS = 8
 _EXCEPTIONAL_SHIFT_PERIOD = 10
 _ZERO_SHIFT_LOG_GAP = 30.0
 _DEFAULT_QR_ITERS_PER_DIM = 60
 _DEFAULT_VARIATIONAL_STEPS = 400
-
-if TYPE_CHECKING:
-    from bifurx.bvp.problem import CollocationProblem, PeriodicOrbitResult
 
 
 def monodromy_factors_condensation(

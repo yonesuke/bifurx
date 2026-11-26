@@ -7,13 +7,9 @@ import jax
 import jax.numpy as jnp
 from jax.typing import ArrayLike
 
-from bifurx.bvp.collocation import (
-    CollocationProblem,
-    PeriodicOrbitResult,
-    continue_periodic_orbit,
-    solve_periodic_orbit,
-)
+from bifurx.bvp.collocation import continue_periodic_orbit, solve_periodic_orbit
 from bifurx.bvp.condensation import condense_local_blocks
+from bifurx.bvp.problem import CollocationProblem, PeriodicOrbitResult
 from bifurx.homotopy.bordered import safe_lu_factor, safe_lu_solve
 from bifurx.options import CollocationOptions, ContinuationOptions
 

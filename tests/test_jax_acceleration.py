@@ -6,11 +6,11 @@ import jax
 import jax.numpy as jnp
 
 from bifurx.bvp.collocation import (
-    CollocationProblem,
     branch_from_hopf,
     initialize_from_hopf,
     solve_periodic_orbit,
 )
+from bifurx.bvp.problem import CollocationProblem
 from bifurx.continuation import bordered_newton_solve, continuation, continuation_scan
 from bifurx.homotopy import compute_tangent, make_gmres_bordered_solver
 from bifurx.prc import compute_iprc

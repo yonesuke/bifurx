@@ -6,11 +6,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from bifurx.bvp.collocation import (
-    CollocationProblem,
-    continue_periodic_orbit,
-    solve_periodic_orbit,
-)
+from bifurx.bvp.collocation import continue_periodic_orbit, solve_periodic_orbit
+from bifurx.bvp.problem import CollocationProblem
 from bifurx.codim2 import continuation_codim2
 from bifurx.continuation import (
     bordered_newton_solve,

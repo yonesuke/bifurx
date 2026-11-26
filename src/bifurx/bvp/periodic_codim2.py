@@ -7,11 +7,7 @@ from typing import Any, NamedTuple
 import jax
 import jax.numpy as jnp
 
-from bifurx.bvp.collocation import (
-    CollocationProblem,
-    PeriodicOrbitResult,
-    periodic_orbit_arclength_weights,
-)
+from bifurx.bvp.collocation import periodic_orbit_arclength_weights
 from bifurx.bvp.condensation import (
     CondensedCollocationFactor,
     _condense_collocation_blocks,
@@ -19,6 +15,7 @@ from bifurx.bvp.condensation import (
     solve_condensed_bordered,
 )
 from bifurx.bvp.floquet import monodromy_condensation_raw
+from bifurx.bvp.problem import CollocationProblem, PeriodicOrbitResult
 from bifurx.homotopy import BorderedOperatorSolver, compute_tangent, track_arclength_scan
 from bifurx.options import ContinuationOptions, resolve_continuation_options
 

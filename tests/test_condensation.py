@@ -4,11 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from bifurx.bvp.collocation import (
-    CollocationProblem,
-    redistribute_mesh,
-    solve_periodic_orbit,
-)
+from bifurx.bvp.collocation import redistribute_mesh, solve_periodic_orbit
 from bifurx.bvp.condensation import (
     CondensedCollocationFactor,
     CyclicBlockBidiagonalFactor,
@@ -19,6 +15,7 @@ from bifurx.bvp.condensation import (
     solve_condensed_collocation,
     solve_cyclic_block_bidiagonal,
 )
+from bifurx.bvp.problem import CollocationProblem
 from bifurx.homotopy.bordered import solve_bordered_system
 
 

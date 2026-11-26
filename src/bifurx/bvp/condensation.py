@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
+from bifurx.bvp.problem import CollocationProblem
 from bifurx.homotopy.bordered import (
     BorderedOperatorSolver,
     BorderedSolution,
     safe_lu_factor,
     safe_lu_solve,
 )
-
-if TYPE_CHECKING:
-    from bifurx.bvp.problem import CollocationProblem
 
 
 class CyclicBlockBidiagonalFactor(NamedTuple):

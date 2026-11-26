@@ -3,11 +3,7 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from bifurx.bvp.collocation import (
-    CollocationProblem,
-    PeriodicOrbitResult,
-    periodic_orbit_arclength_weights,
-)
+from bifurx.bvp.collocation import periodic_orbit_arclength_weights
 from bifurx.bvp.condensation import (
     factor_condensed_collocation,
     make_collocation_bordered_solver,
@@ -16,6 +12,7 @@ from bifurx.bvp.floquet import (
     evaluate_floquet_diagnostics_from_factors,
     monodromy_factors_condensation,
 )
+from bifurx.bvp.problem import CollocationProblem, PeriodicOrbitResult
 from bifurx.homotopy.corrector import correct_arclength_step
 from bifurx.homotopy.rootfind import safeguarded_secant_root
 
