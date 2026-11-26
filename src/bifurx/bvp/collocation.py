@@ -30,9 +30,6 @@ from bifurx.bvp.problem import (
     PeriodicOrbitResult,
     _orbit_amplitude,
 )
-from bifurx.bvp.problem import (
-    collocation_matrices as collocation_matrices,
-)
 from bifurx.homotopy import BorderedOperatorSolver, compute_tangent, track_arclength_scan
 from bifurx.homotopy.corrector import correct_arclength_step
 from bifurx.options import (

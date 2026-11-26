@@ -201,14 +201,14 @@ flipping $\tau_{\text{new}} \leftarrow -\tau_{\text{new}}$ whenever $\langle \ta
 
 | Component | Symbol in `bifurx.bvp` | Role |
 | :--- | :--- | :--- |
-| Golub–Welsch & matrices | `collocation.collocation_matrices` | Computes Gauss–Legendre $(\rho, w)$, differentiation $D$, and endpoint extrapolation $C$ |
+| Golub–Welsch & matrices | `problem.collocation_matrices` | Computes Gauss–Legendre $(\rho, w)$, differentiation $D$, and endpoint extrapolation $C$ |
 | Structured cyclic factor | `condensation.CyclicBlockBidiagonalFactor` | PyTree `NamedTuple` storing $(Q, R, E, G, W)$ and reduced $(n+b)\times(n+b)$ factor |
 | Stage 2 factorization | `condensation.factor_cyclic_block_bidiagonal` | $\mathcal{O}(N n^3)$ orthogonal block-QR elimination via `jax.lax.scan` |
 | Stage 2 solve | `condensation.solve_cyclic_block_bidiagonal` | Forward orthogonal sweep + reduced LU/`lstsq` + reverse triangular back-substitution |
 | Full 2-stage factor | `condensation.factor_condensed_collocation` | Parallel `vmap` Stage 1 condensation + Stage 2 cyclic factorization |
 | Square / Bordered solves | `condensation.solve_condensed_collocation`, `solve_condensed_bordered` | Reusable solves for `solve_periodic_orbit` and `track_arclength_scan` |
 | Homotopy bridge | `condensation.make_collocation_bordered_solver` | Plugs directly into `bifurx.homotopy.BorderedOperatorSolver` |
-| Adaptive remeshing | `mesh.redistribute_mesh` | Equidistributed mesh update, polynomial interpolation, and re-solve |
+| Adaptive remeshing | `mesh.equidistribute_mesh`, `collocation.redistribute_mesh` | Equidistributed mesh update, polynomial interpolation, and re-solve |
 
 ---
 
