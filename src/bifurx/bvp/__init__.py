@@ -1,10 +1,7 @@
 """bifurx.bvp: Boundary Value Problem (BVP) collocation solvers for periodic orbits."""
 
 from bifurx.bvp.collocation import (
-    CollocationProblem,
-    PeriodicOrbitResult,
     branch_from_hopf,
-    collocation_matrices,
     continue_periodic_orbit,
     initialize_from_hopf,
     periodic_orbit_arclength_weights,
@@ -36,6 +33,11 @@ from bifurx.bvp.periodic_codim2 import (
     PeriodicCodim2Result,
     continue_fixed_period_2p,
     continue_periodic_bifurcation_2p,
+)
+from bifurx.bvp.problem import (
+    CollocationProblem,
+    PeriodicOrbitResult,
+    collocation_matrices,
 )
 
 __all__ = [

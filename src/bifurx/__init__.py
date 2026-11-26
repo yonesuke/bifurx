@@ -23,10 +23,7 @@ from bifurx.bifurcations import (
     test_func_hopf,
 )
 from bifurx.bvp.collocation import (
-    CollocationProblem,
-    PeriodicOrbitResult,
     branch_from_hopf,
-    collocation_matrices,
     continue_periodic_orbit,
     initialize_from_hopf,
     solve_periodic_orbit,
@@ -42,6 +39,11 @@ from bifurx.bvp.periodic_codim2 import (
     PeriodicCodim2Result,
     continue_fixed_period_2p,
     continue_periodic_bifurcation_2p,
+)
+from bifurx.bvp.problem import (
+    CollocationProblem,
+    PeriodicOrbitResult,
+    collocation_matrices,
 )
 from bifurx.codim2 import (
     Codim2Point,

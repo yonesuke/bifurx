@@ -13,7 +13,7 @@ from bifurx.homotopy.bordered import (
 )
 
 if TYPE_CHECKING:
-    from bifurx.bvp.collocation import CollocationProblem
+    from bifurx.bvp.problem import CollocationProblem
 
 
 class CyclicBlockBidiagonalFactor(NamedTuple):

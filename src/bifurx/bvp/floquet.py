@@ -14,7 +14,7 @@ _DEFAULT_QR_ITERS_PER_DIM = 60
 _DEFAULT_VARIATIONAL_STEPS = 400
 
 if TYPE_CHECKING:
-    from bifurx.bvp.collocation import CollocationProblem, PeriodicOrbitResult
+    from bifurx.bvp.problem import CollocationProblem, PeriodicOrbitResult
 
 
 def monodromy_factors_condensation(
