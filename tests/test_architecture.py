@@ -292,3 +292,44 @@ def test_internal_import_graph_is_dag() -> None:
     except graphlib.CycleError as exc:
         cycle = " -> ".join(exc.args[1])
         raise AssertionError(f"Circular import detected in src/bifurx/: {cycle}") from exc
+
+
+def test_no_passthrough_internal_imports() -> None:
+    """Verify non-`__init__` modules are only imported for symbols they define themselves."""
+    src_files = _iter_py_files(SRC_ROOT)
+    defined_in_module: dict[str, set[str]] = {}
+
+    for path in src_files:
+        if path.name == "__init__.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        names: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        names.add(target.id)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+        defined_in_module[_path_to_module(path)] = names
+
+    violations: list[str] = []
+    for path in [*src_files, *_iter_py_files(TESTS_ROOT)]:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel_path = path.relative_to(REPO_ROOT)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module in defined_in_module
+            ):
+                mod = node.module
+                for alias in node.names:
+                    if alias.name not in defined_in_module[mod]:
+                        violations.append(
+                            f"{rel_path}:{node.lineno}: '{alias.name}' is not defined in '{mod}'"
+                        )
+
+    assert not violations, "Pass-through internal imports detected:\n" + "\n".join(violations)
